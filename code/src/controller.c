@@ -190,17 +190,17 @@ int main()
                     }
                 }
             }
-            else if (strncmp(input, "del ", 4) == 0)
-            {
+            else if (strncmp(input, "del ", 4) == 0) {
                 int target_id;
-                if (sscanf(input, "del %d", &target_id) == 1)
-                {
-                    printf("[Controller] Terminating device ID: %d\n", target_id);
-                    // TODO: send SIGTERM and cascade deletion via IPC
-                }
-                else
-                {
-                    printf("Error: Invalid syntax. Use: del <id>\n");
+                if (sscanf(input, "del %d", &target_id) == 1) {
+                    int index = find_device_index(target_id);
+                    if (index != -1) {
+                        printf("[Controller] Terminating device ID %d (PID %d)...\n", target_id, routing_table[index].pid);
+                        // sends SIGTERM for clean termination --> the SIGCHLD handler will remove it from the routing table
+                        kill(routing_table[index].pid, SIGTERM); 
+                    } else {
+                        printf("Error: Device ID %d not found.\n", target_id);
+                    }
                 }
             }
             else if (strncmp(input, "link ", 5) == 0)
@@ -248,8 +248,12 @@ int main()
             else if (strcmp(input, "exit") == 0)
             {
                 printf("Powering off...\n");
-                // TODO: send close signals to all of the child processes before
-                // terminating
+                // sends SIGTERM to all active devices
+                for (int i = 0; i < MAX_DEVICES; i++) {
+                    if (routing_table[i].is_active) {
+                        kill(routing_table[i].pid, SIGTERM);
+                    }
+                }
                 break;
             }
             else

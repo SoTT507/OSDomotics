@@ -1,11 +1,4 @@
 #include "common.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h> // For sys functions
-
-// Dimension cap of command sent by user
-#define MAX_CMD_LEN 256
 
 int main() {
   char input[MAX_CMD_LEN];
@@ -13,7 +6,7 @@ int main() {
   printf("--- Domotics System Powered On ---\n");
   printf("Digit 'help' to view all commands or 'exit' to quit.\n");
 
-  // Infinite loop for interactive shell
+  // infinite loop for interactive shell
   while (1) {
     printf("domotics> ");
 
@@ -22,10 +15,10 @@ int main() {
       break;
     }
 
-    // Removing \n character from string's end
+    // removing \n character form string's end
     input[strcspn(input, "\n")] = 0;
 
-    // If user press enter to nothing --> ignore
+    // if user press enter to nothing --> ignore
     if (strlen(input) == 0) {
       continue;
     }

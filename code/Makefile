@@ -8,10 +8,10 @@ all: build
 build: controller bulb
 
 controller: src/controller.c src/common.h
-	$(CC) $(CFLAGS) -o controller controller.c
+	$(CC) $(CFLAGS) -o controller src/controller.c
 
 bulb: src/bulb.c src/common.h
-	$(CC) $(CFLAGS) -o bulb bulb.c
+	$(CC) $(CFLAGS) -o bulb src/bulb.c
 
 # TODO: Add compilation rules for window, fridge, hub, timer here as you create them
 

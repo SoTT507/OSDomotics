@@ -34,7 +34,7 @@ int main() {
     } else if (strcmp(input, "list") == 0) {
       printf("Device list. (TODO)\n");
     } else {
-      printf("Error: Command not found (Code: %d).\n", ERROR_INVALID_COMMAND);
+      printf("Error: Command not found (Code: %d).\n", ERR_INVALID_COMMAND);
     }
   }
 

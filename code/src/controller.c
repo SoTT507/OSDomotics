@@ -59,6 +59,35 @@ void handle_sigchld(int sig)
     }
 }
 
+// function to send an IPC message to a device
+int send_ipc_message(int target_logical_id, int sender_id, const char* cmd_string) {
+    char fifo_path[128];
+    // builds the path of the device's FIFO (e.g., /tmp/domotics_dev_3.fifo)
+    snprintf(fifo_path, sizeof(fifo_path), "%s%d.fifo", FIFO_PATH_PREFIX, target_logical_id);
+
+    // opens the FIFO for writing only (we use O_NONBLOCK to avoid blocking the controller
+    // if the device is not reading yet)
+    int fd = open(fifo_path, O_WRONLY | O_NONBLOCK);
+    if (fd == -1) {
+        printf("Error: Unable to contact device %d (FIFO not found).\n", target_logical_id);
+        return ERR_DEVICE_NOT_FOUND;
+    }
+
+    IPC_Message msg;
+    msg.sender_id = sender_id;
+    msg.target_id = target_logical_id;
+    strncpy(msg.command, cmd_string, MAX_CMD_LEN);
+
+    if (write(fd, &msg, sizeof(IPC_Message)) == -1) {
+        perror("Error writing to device FIFO");
+        close(fd);
+        return ERR_PIPE_BROKEN;
+    }
+
+    close(fd);
+    return SUCCESS;
+}
+
 int main()
 {
     char input[MAX_CMD_LEN];
@@ -222,10 +251,13 @@ int main()
             {
                 int target_id;
                 char label[32], pos[32];
-                if (sscanf(input, "switch %d %31s %31s", &target_id, label, pos) == 3)
-                {
-                    printf("[Controller] Switching device %d: label '%s' to '%s'\n", target_id, label, pos);
-                    // TODO: send IPC message to target device
+                if (find_device_index(target_id) != -1) {
+                    char cmd_buffer[MAX_CMD_LEN];
+                    // formatting the command to send to the device
+                    snprintf(cmd_buffer, sizeof(cmd_buffer), "switch %s %s", label, pos);
+        
+                    printf("[Controller] Sending command to device %d...\n", target_id);
+                    send_ipc_message(target_id, 0, cmd_buffer); // sender_id 0 = Controller
                 }
                 else
                 {
@@ -235,10 +267,11 @@ int main()
             else if (strncmp(input, "info ", 5) == 0)
             {
                 int target_id;
-                if (sscanf(input, "info %d", &target_id) == 1)
-                {
-                    printf("[Controller] Requesting info for device ID: %d\n", target_id);
-                    // TODO: query device state via IPC
+                if (sscanf(input, "info %d", &target_id) == 1) {
+                    if (find_device_index(target_id) != -1) {
+                        printf("[Controller] requesting info for device %d...\n", target_id);
+                        send_ipc_message(target_id, 0, "info");
+                    }
                 }
                 else
                 {

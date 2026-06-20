@@ -306,9 +306,9 @@ int main()
             if (bytes_read > 0)
             {
                 // TODO: Gestire il messaggio IPC (es. aggiornamenti di stato, errori dal device)
-                // printf("\n[IPC IN] Da: %d | A: %d | Msg: %s\n", msg.sender_id, msg.target_id, msg.command);
-                // printf("domotics> ");
-                // fflush(stdout);
+                printf("\n[IPC IN] Da: %d | A: %d | Msg: %s\n", msg.sender_id, msg.target_id, msg.command);
+                printf("domotics> ");
+                fflush(stdout);
             }
         }
     }

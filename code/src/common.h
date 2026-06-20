@@ -63,5 +63,7 @@ typedef struct {
 
 //-----------------------------------------------
 char **tokenise(char*);
+void init_routing_table(Device[]);
+int find_device_index(int const, Device[]);
 
 #endif

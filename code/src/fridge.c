@@ -11,6 +11,11 @@
 #define DEF_TEMP 5
 #define TEMP_PREC 0.1
 
+#define SWITCH_OFF(timer, start_t, state) { \
+  timer += (int) (time(NULL) - start_t);    \
+  state = 0;                                \
+}
+
 typedef struct {
   int time = 0,
       delay = DEF_DELAY,
@@ -22,7 +27,10 @@ typedef struct {
 int my_id;
 int is_on = 0; // 0 = off, 1 = on
 char my_fifo[128];
+char *parent_fifo = CONTROLLER_FIFO;
 int fifo_fd;
+int parent_fd;
+
 registry my_reg;
 
 void cleanup_and_exit(int sig) {
@@ -30,6 +38,29 @@ void cleanup_and_exit(int sig) {
   close(fifo_fd);
   unlink(my_fifo); // Remove named pipe from filesystem
   exit(0);
+}
+
+int send_ctl_ack(IPC_Message *msg){
+  if (write(parent_fd, (char*)msg, sizeof(IPC_Message)) == -1) {
+    perror("send_ctl_ack()");
+    return ERR_PIPE_BROKEN;
+  }
+  return SUCCESS;
+}
+
+int link(int const par_id){
+  sprintf(parent_fifo, "%s%d", FIFO_PATH_PREFIX, par_id);
+  int tmp_pfd = open(parent_fifo, O_WRONLY);
+
+  if (tmp_pfd == -1) {
+    // notify failed link
+    return ERR_PIPE_BROKEN;
+  }
+  // or dup2(tmp_pfd, parent_fd)
+  close(parent_fd);
+  parent_fd = tmp_pfd;
+
+  return SUCCESS;
 }
 
 int main(int argc, char *argv[]) {
@@ -40,6 +71,12 @@ int main(int argc, char *argv[]) {
 
   my_id = atoi(argv[1]);
   sprintf(my_fifo, "%s%d.fifo", FIFO_PATH_PREFIX, my_id);
+  
+  parent_fd = open(parent_fifo, O_WRONLY);
+  if (parent_fd < 0) {
+    perror("Failed to open parent's fifo");
+    _exit(ERR_PIPE_BROKEN);
+  }
 
   // termination
   signal(SIGTERM, cleanup_and_exit);
@@ -116,9 +153,11 @@ int main(int argc, char *argv[]) {
         is_on = 1;
         printf("[Fridge %d] Status changed to ON\n", my_id);
       } else if (strncmp(msg.command, "switch power off", 16) == 0) {
-        my_reg.time += (time(NULL) - tmp_time);
-        is_on = 0;
+        SWITCH_OFF(my_reg.time, tmp_time, is_on);
         printf("[Fridge %d] Status changed to OFF\n", my_id);
+      } else if (strcmp(tokens[0], "link") == 0) {
+        link(strtol(tokens[1], NULL, 10));
+        send_ctl_ack("ack link\0");
       }
 
       // TODO: Send acknowledgment back to Controller via CONTROLLER_FIFO
@@ -127,15 +166,13 @@ int main(int argc, char *argv[]) {
       sprintf(msg, "done");
       IPC_Message ack_msg = { my_id, msg.sender_id, msg_str };
       
-      if (write(parent_fifo, (char*)&ack_msg, sizeof(IPC_Message)) == -1) {
-        errno = ERR_PIPE_BROKEN;
-        perror("write()");
+      if(send_ctl_ack(ack_msg)){
+        printf("Error [dev. %d]: couldn't send ack\n", my_id);
       }
     }
 
     if (is_on && (time(NULL) - tmp_time) >= msg.delay) {
-      my_reg.time += (time(NULL) - tmp_time);
-      is_on = 0;
+      SWITCH_OFF(my_reg.time, tmp_time, is_on);
     }
     if (my_reg.temp != my_reg.thermostat) {
       my_reg.temp += (my_reg.temp < my_reg.thermostat) ? 0.1 : -0.1;

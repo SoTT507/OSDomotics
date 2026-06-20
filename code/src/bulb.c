@@ -23,6 +23,20 @@ int send_ctl_ack(char *ack_str){
   return SUCCESS;
 }
 
+int link(int const par_id){
+  sprintf(parent_fifo, "%s%d", FIFO_PATH_PREFIX, par_id);
+  int tmp_pfd = open(parent_fifo, O_WRONLY);
+
+  if (tmp_pfd == -1) {
+    // notify failed link
+    return ERR_PIPE_BROKEN;
+  }
+  // or dup2(tmp_pfd, parent_fd)
+  close(parent_fd);
+  parent_fd = tmp_pfd;
+
+  return SUCCESS;
+}
 
 int main(int argc, char *argv[]) {
   if (argc < 2) {
@@ -76,23 +90,13 @@ int main(int argc, char *argv[]) {
         is_on = 0;
         printf("[Bulb %d] Status changed to OFF\n", my_id);
       } else if (strcmp(tokens[0], "link") == 0) {
-        int parent_id = strtol(tokens[1], NULL, 10);
-        sprintf(parent_fifo, "%s%d", FIFO_PATH_PREFIX, parent_id);
-
-        int tmp_pfd = open(parent_fifo, O_WRONLY);
-        if (tmp_pfd == -1) {
-          // notify failed link
-        } else {
-          send_ctl_ack("ack link\0");
-          // or dup2(tmp_pfd, parent_fd)
-          close(parent_fd);
-          parent_fd = tmp_pfd;
-        }
+        link(strtol(tokens[1], NULL, 10));
+        send_ctl_ack("ack link\0");
       }
-
-      send_ctl_ack("ack\0");
-      // TODO: Send acknowledgment back to Controller via CONTROLLER_FIFO
     }
+
+    send_ctl_ack("ack\0");
+      // TODO: Send acknowledgment back to Controller via CONTROLLER_FIFO
   }
 
   return 0;

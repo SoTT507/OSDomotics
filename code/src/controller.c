@@ -1,30 +1,16 @@
 #include "common.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 Device routing_table[MAX_DEVICES];
 int next_logical_id = 1;
 
-// initializes the routing table
-void init_routing_table()
-{
-    for (int i = 0; i < MAX_DEVICES; i++)
-    {
-        routing_table[i].is_active = 0;
-    }
-}
-
-// finds the index of a device via logical ID
-int find_device_index(int logical_id)
-{
-    for (int i = 0; i < MAX_DEVICES; i++)
-    {
-        if (routing_table[i].is_active &&
-            routing_table[i].logical_id == logical_id)
-        {
-            return i;
-        }
-    }
-    return -1;
-}
+#define find_dev_index(id) find_device_index(id, routing_table)
 
 // signal manager for child processes (Crash or termination)
 void handle_sigchld(int sig)
@@ -94,7 +80,7 @@ int main()
     int controller_fifo_fd;
     fd_set read_fds;
 
-    init_routing_table();
+    init_routing_table(routing_table);
 
     // sets the manager for terminated child processes
     struct sigaction sa;
@@ -222,7 +208,7 @@ int main()
             else if (strncmp(input, "del ", 4) == 0) {
                 int target_id;
                 if (sscanf(input, "del %d", &target_id) == 1) {
-                    int index = find_device_index(target_id);
+                    int index = find_dev_index(target_id);
                     if (index != -1) {
                         printf("[Controller] Terminating device ID %d (PID %d)...\n", target_id, routing_table[index].pid);
                         // sends SIGTERM for clean termination --> the SIGCHLD handler will remove it from the routing table
@@ -241,8 +227,8 @@ int main()
                     printf("[Controller] Linking device %d to parent device %d\n", id1,
                            id2);
                     // TODO: update routing table and notify via IPC
-                    int index1 = find_device_index(id1),
-                        index2 = find_device_index(id2);
+                    int index1 = find_dev_index(id1),
+                        index2 = find_dev_index(id2);
                     check_link(index1, index2);
                     // ... [check indexes]
                     routing_table[index1].logical_id = routing_table[index2].logical_id;
@@ -265,7 +251,7 @@ int main()
             {
                 int target_id;
                 char label[32], pos[32];
-                if (find_device_index(target_id) != -1) {
+                if (find_dev_index(target_id) != -1) {
                     char cmd_buffer[MAX_CMD_LEN];
                     // formatting the command to send to the device
                     snprintf(cmd_buffer, sizeof(cmd_buffer), "switch %s %s", label, pos);
@@ -282,7 +268,7 @@ int main()
             {
                 int target_id;
                 if (sscanf(input, "info %d", &target_id) == 1) {
-                    if (find_device_index(target_id) != -1) {
+                    if (find_dev_index(target_id) != -1) {
                         printf("[Controller] requesting info for device %d...\n", target_id);
                         send_ipc_message(target_id, 0, "info");
                     }

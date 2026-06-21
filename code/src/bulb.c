@@ -2,6 +2,7 @@
 
 int my_id;
 int is_on = 0; // 0 = off, 1 = on
+
 char my_fifo[128];
 int fifo_fd;
 

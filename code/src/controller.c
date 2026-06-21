@@ -88,6 +88,29 @@ int send_ipc_message(int target_logical_id, int sender_id, const char* cmd_strin
     return SUCCESS;
 }
 
+// returns 1 if a cycle is detected, 0 otherwise
+int check_for_cycles(int child_id, int new_parent_id) {
+    // Base case: a device cannot be the parent of itself
+    if (child_id == new_parent_id) return 1; 
+
+    int current_node = new_parent_id;
+    
+    // Iterates the tree upwards until the root (0 = Controller)
+    while (current_node != 0) { 
+        int idx = find_device_index(current_node);
+        if (idx == -1) break; // Safety: node not found (shouldn't happen but who knows)
+        
+        int parent_of_current = routing_table[idx].parent_id;
+
+        // if one of the parents of the new parent is the child we are connecting --> cycle!
+        if (parent_of_current == child_id) {
+            return 1; 
+        }
+        current_node = parent_of_current;
+    }
+    return 0; // No cycle found
+}
+
 int main()
 {
     char input[MAX_CMD_LEN];
@@ -212,10 +235,11 @@ int main()
                                 routing_table[i].pid = pid;
                                 strcpy(routing_table[i].type, device_type);
                                 routing_table[i].is_active = 1;
+                                routing_table[i].parent_id = 0; // default parent is Controller
                                 break;
                             }
                         }
-                        printf("[Controller] Spawneed '%s' with logic ID %d (PID: %d)\n", device_type, new_id, pid);
+                        printf("[Controller] Spawned '%s' with logic ID %d (PID: %d)\n", device_type, new_id, pid);
                     }
                 }
             }

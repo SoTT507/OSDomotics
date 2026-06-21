@@ -238,12 +238,36 @@ int main()
                 // The pattern "link %d to %d" does all the work for us
                 if (sscanf(input, "link %d to %d", &id1, &id2) == 2)
                 {
-                    printf("[Controller] Linking device %d to parent device %d\n", id1,
-                           id2);
-                    // TODO: update routing table and notify via IPC
-                }
-                else
-                {
+                    int idx1 = find_device_index(id1);
+                    int idx2 = find_device_index(id2);
+                    if (idx1 != -1 && idx2 != -1) {
+                        // REQ: id2 MUST be a Control Device (hub, timer or Controller)
+                        // the controller which is the first created, has ID 0, thus id2 == 0 is always valid
+                        if (strcmp(routing_table[idx2].type, "hub") != 0 && strcmp(routing_table[idx2].type, "timer") != 0 && id2 != 0) {
+                            
+                            printf("Error (Code %d): The device %d (%s) is NOT a Control Device.\n", 
+                            ERR_DEVICE_TYPE_MISMATCH, id2, routing_table[idx2].type);
+                        }else{
+                            char cmd_buffer[MAX_CMD_LEN];
+
+                            printf("[Controller] Linking devices: %d set to be child of %d\n", id1, id2);
+
+                            // sending IPC to the child device (id1) informing it of the new parent (id2)
+                            snprintf(cmd_buffer, sizeof(cmd_buffer), "set_parent %d", id2);
+                            send_ipc_message(id1, 0, cmd_buffer);
+
+                            // sending IPC to the parent device (id2) informing it of the new child (id1)
+                            // If the parent is the controller (id2 == 0), we don't send the IPC message, we just update our logical table.
+                            if (id2 != 0) {
+                                snprintf(cmd_buffer, sizeof(cmd_buffer), "add_child %d", id1);
+                                send_ipc_message(id2, 0, cmd_buffer);
+                            }
+                            printf("[Controller] Link command sent successfully.\n");
+                        }
+                    } else {
+                        printf("Errore: Impossible to find one or both devices (ID1: %d, ID2: %d).\n", id1, id2);
+                    }
+                } else {
                     printf("Error: Invalid syntax. Use: link <id1> to <id2>\n");
                 }
             }

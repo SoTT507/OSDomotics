@@ -45,7 +45,7 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, cleanup_and_exit);
   signal(SIGINT, cleanup_and_exit);
 
-  // Inizializza il generatore di numeri casuali (per la sleep)
+  // initializes the random number generator (for the sleep)
   srand(time(NULL) ^ (getpid() << 16));
 
   // FIFO for this specific device
@@ -73,21 +73,31 @@ int main(int argc, char *argv[]) {
       // simulate processing latency (1 to 3 seconds)
       sleep((rand() % 3) + 1);
 
+      int is_manual_override = (msg.sender_id == -1);
+      char prefix[32];
+      if (is_manual_override) {
+        strcpy(prefix, "OVERRIDE (Manual)");
+      } else {
+        strcpy(prefix, "ACK");
+      }
+
       if (strncmp(msg.command, "switch power on", 15) == 0) {
         if (!is_on) {
             is_on = 1;
             last_turn_on_time = time(NULL);
         }
-        printf("[Bulb %d] ACK: Bulb turned on\n", my_id);
-        send_to_controller("ACK: Bulb turned ON");
+        char response[MAX_CMD_LEN];
+        snprintf(response, sizeof(response), "%s: Bulb %d turned ON", prefix, my_id);
+        send_to_controller(response);
 
       } else if (strncmp(msg.command, "switch power off", 16) == 0) {
           if (is_on) {
             is_on = 0;
             total_time_on += difftime(time(NULL), last_turn_on_time);
           }
-        printf("[Bulb %d] ACK: Bulb turned off\n", my_id);
-        send_to_controller("ACK: Bulb turned OFF");
+        char response[MAX_CMD_LEN];
+        snprintf(response, sizeof(response), "%s: Bulb %d turned OFF", prefix, my_id);
+        send_to_controller(response);
       
       } else if (strncmp(msg.command, "info", 4) == 0) {
         // computes the startup time even if the bulb is currently ON
@@ -98,7 +108,7 @@ int main(int argc, char *argv[]) {
 
         char info_buffer[MAX_CMD_LEN];
         snprintf(info_buffer, sizeof(info_buffer), 
-                 "INFO: Bulb ID %d | Stato: %s | Tempo totale accensione: %ld sec", 
+                 "INFO: Bulb ID %d | Status: %s | Total time on: %ld sec", 
                  my_id, is_on ? "ON" : "OFF", current_time_on);
                  
         send_to_controller(info_buffer);

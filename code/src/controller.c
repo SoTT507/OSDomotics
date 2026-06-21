@@ -264,6 +264,8 @@ int main()
                 {
                     int idx1 = find_device_index(id1);
                     int idx2 = find_device_index(id2);
+
+                    // to verify that the devices exists (id2==0 is valid by default)
                     if (idx1 != -1 && (idx2 != -1 || id2 == 0)) {
                         // REQ: id2 MUST be a Control Device (hub, timer or Controller)
                         // the controller which is the first created, has ID 0, thus id2 == 0 is always valid

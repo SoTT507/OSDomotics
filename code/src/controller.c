@@ -251,16 +251,18 @@ int main()
             {
                 int target_id;
                 char label[32], pos[32];
-                if (find_device_index(target_id) != -1) {
-                    char cmd_buffer[MAX_CMD_LEN];
-                    // formatting the command to send to the device
-                    snprintf(cmd_buffer, sizeof(cmd_buffer), "switch %s %s", label, pos);
+                if (sscanf(input, "switch %d %31s %31s", &target_id, label, pos) == 3){
+                    if (find_device_index(target_id) != -1) {
+                        char cmd_buffer[MAX_CMD_LEN];
+                        // formatting the command to send to the device
+                        snprintf(cmd_buffer, sizeof(cmd_buffer), "switch %s %s", label, pos);
         
-                    printf("[Controller] Sending command to device %d...\n", target_id);
-                    send_ipc_message(target_id, 0, cmd_buffer); // sender_id 0 = Controller
-                }
-                else
-                {
+                        printf("[Controller] Sending command to device %d...\n", target_id);
+                        send_ipc_message(target_id, 0, cmd_buffer); // sender_id 0 = Controller
+                    }else{
+                        printf("Error: Device ID %d not found.\n", target_id);
+                    }
+                }else{
                     printf("Error: Invalid syntax. Use: switch <id> <label> <pos>\n");
                 }
             }
@@ -305,7 +307,7 @@ int main()
 
             if (bytes_read > 0)
             {
-                // TODO: Gestire il messaggio IPC (es. aggiornamenti di stato, errori dal device)
+                // TODO: manage IPC message (e.g. status update, device errors)
                 printf("\n[IPC IN] Da: %d | A: %d | Msg: %s\n", msg.sender_id, msg.target_id, msg.command);
                 printf("domotics> ");
                 fflush(stdout);

@@ -264,7 +264,7 @@ int main()
                 {
                     int idx1 = find_device_index(id1);
                     int idx2 = find_device_index(id2);
-                    if (idx1 != -1 && idx2 != -1) {
+                    if (idx1 != -1 && (idx2 != -1 || id2 == 0)) {
                         // REQ: id2 MUST be a Control Device (hub, timer or Controller)
                         // the controller which is the first created, has ID 0, thus id2 == 0 is always valid
                         if (strcmp(routing_table[idx2].type, "hub") != 0 && strcmp(routing_table[idx2].type, "timer") != 0 && id2 != 0) {
@@ -276,12 +276,14 @@ int main()
 
                             printf("[Controller] Linking devices: %d set to be child of %d\n", id1, id2);
 
+                            routing_table[idx1].parent_id = id2;
+
                             // sending IPC to the child device (id1) informing it of the new parent (id2)
                             snprintf(cmd_buffer, sizeof(cmd_buffer), "set_parent %d", id2);
                             send_ipc_message(id1, 0, cmd_buffer);
 
                             // sending IPC to the parent device (id2) informing it of the new child (id1)
-                            // If the parent is the controller (id2 == 0), we don't send the IPC message, we just update our logical table.
+                            // if the parent is the controller (id2 == 0), we don't send the IPC message, we just update our logical table.
                             if (id2 != 0) {
                                 snprintf(cmd_buffer, sizeof(cmd_buffer), "add_child %d", id1);
                                 send_ipc_message(id2, 0, cmd_buffer);

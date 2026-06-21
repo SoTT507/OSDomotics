@@ -54,7 +54,8 @@ int main(int argc, char *argv[]) {
     exit(EXIT_FAILURE);
   }
 
-    printf("[Bulb %d] Ready. Listening on %s\n", my_id, my_fifo);
+  printf("[Bulb %d] Ready. Listening on %s\n", my_id, my_fifo);
+
   // open FIFO for reading (blocks until a writer connects)
   // using O_RDWR prevents EOF when the writer closes the pipe
   fifo_fd = open(my_fifo, O_RDWR);

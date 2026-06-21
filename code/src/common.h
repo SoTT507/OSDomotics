@@ -26,10 +26,8 @@
 
 // Command and State Errors
 #define ERR_INVALID_COMMAND 201
-#define ERR_MANUAL_OVERRIDE                                                    \
-  202 // Used when Hub detects inconsistent child states
-#define ERR_UNSUPPORTED_SWITCH                                                 \
-  203 // e.g., trying to change fridge 'perc' via Controller
+#define ERR_MANUAL_OVERRIDE 202 // Used when Hub detects inconsistent child states
+#define ERR_UNSUPPORTED_SWITCH 203 // e.g., trying to change fridge 'perc' via Controller
 
 // System Errors
 #define ERR_PROCESS_CRASHED 301

@@ -9,20 +9,19 @@ ARGS="$@"
 case "$COMMAND" in
 build)
     echo "Compilation..."
-    # Compiliamo tutti i componenti nella cartella corrente
     gcc -Wall -Wextra -std=gnu17 -g src/controller.c -o controller
     gcc -Wall -Wextra -std=gnu17 -g src/bulb.c -o bulb
     gcc -Wall -Wextra -std=gnu17 -g src/window.c -o window
     gcc -Wall -Wextra -std=gnu17 -g src/fridge.c -o fridge
+    gcc -Wall -Wextra -std=gnu17 -g src/hub.c -o hub
+    gcc -Wall -Wextra -std=gnu17 -g src/timer.c -o timer
     gcc -Wall -Wextra -std=gnu17 -g src/manual_interaction.c -o manual_interaction
     echo "Compiled successfully!"
     ;;
 
 clean)
     echo "Cleanup..."
-    # Rimuoviamo tutti gli eseguibili inclusi i nuovi dispositivi
-    rm -f controller bulb window fridge manual_interaction
-    # Rimuoviamo le pipe (FIFO) dell'IPC
+    rm -f controller bulb window fridge hub timer manual_interaction
     rm -f /tmp/domotics_*.fifo
     rm -f /tmp/test_stdin.fifo
     echo "System reset complete"
@@ -34,6 +33,7 @@ run)
     $0 build
     
     # Delegate the execution to the dedicated script
+    chmod +x run_demo.sh
     ./run_demo.sh "$ARGS"
     ;;
 

@@ -1,157 +1,196 @@
 #include "common.h"
 #include <time.h>
 
-#define MAX_CHILDREN 10
-
 int my_id;
-int is_on = 0; // 0 = off, 1 = on
+int parent_id = 0;
 char my_fifo[128];
 int fifo_fd;
-int parent_fd;
-int parent_id;
 
-Device routing_table[MAX_CHILDREN];
-int children = 0;
-
-typedef enum {OFF, ON, INCON = -1} state;
+int children[MAX_DEVICES];
+int num_children = 0;
 
 void cleanup_and_exit(int sig) {
-  printf("\n[Timer %d] Shutting down...\n", my_id);
-  close(fifo_fd);
-  unlink(my_fifo); // Remove named pipe from filesystem
-  exit(0);
+    (void)sig;
+    printf("\n[Hub %d] Shutting down...\n", my_id);
+    close(fifo_fd);
+    unlink(my_fifo);
+    exit(SUCCESS);
 }
 
-int send_ctl_ack(char *ack_str) {
-  IPC_Message ack_msg = {my_id, 0, ack_str};
-  if (write(parent_fd, (char*)&ack_msg, sizeof(IPC_Message)) == -1) {
-    perror("send_ctl_ack()");
-    return ERR_PIPE_BROKEN;
-  }
-  return SUCCESS;
+void send_to_child(int child_id, const char* cmd_string) {
+    char fifo_path[128];
+    snprintf(fifo_path, sizeof(fifo_path), "%s%d.fifo", FIFO_PATH_PREFIX, child_id);
+    int fd = open(fifo_path, O_WRONLY | O_NONBLOCK);
+    if (fd != -1) {
+        IPC_Message msg;
+        msg.sender_id = my_id;
+        msg.target_id = child_id;
+        strncpy(msg.command, cmd_string, MAX_CMD_LEN);
+        
+        ssize_t bytes_written = 0;
+        char *ptr = (char *)&msg;
+        while (bytes_written < (ssize_t)sizeof(IPC_Message)) {
+            ssize_t w = write(fd, ptr + bytes_written, sizeof(IPC_Message) - bytes_written);
+            if (w == -1) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            bytes_written += w;
+        }
+        close(fd);
+    }
 }
 
-// or: link(Device const *child)
-int link(int const child_id) {
-  if (children == MAX_CHILDREN) {
-    return ERR_LINK_FAILED;
-  }
+void send_response(int requester_id, const char* response_str, int is_override) {
+    char target_fifo[128];
+    char final_message[MAX_CMD_LEN];  
 
-  char *child_path;
-  sprintf(child_path, "%s%d", FIFO_PATH_PREFIX, child_id);
-  child_fd = open(child_path, O_WRONLY);
+    if (is_override) {
+        snprintf(final_message, MAX_CMD_LEN, "OVERRIDE (Manual): %s", response_str);
+    } else {
+        strncpy(final_message, response_str, MAX_CMD_LEN);
+    }
 
-  routing_table[children].logical_id = child_id;
-  routing_table[i].is_active = 1;
+    if (requester_id == 0 || requester_id == -1) {
+        strcpy(target_fifo, CONTROLLER_FIFO);
+    } else {
+        snprintf(target_fifo, sizeof(target_fifo), "%s%d.fifo", FIFO_PATH_PREFIX, requester_id);
+    }
 
-  return SUCCESS;
+    int target_fd = open(target_fifo, O_WRONLY | O_NONBLOCK);
+    if (target_fd != -1) {
+        IPC_Message response;
+        response.sender_id = my_id;
+        response.target_id = (requester_id == -1) ? 0 : requester_id;
+        strncpy(response.command, final_message, MAX_CMD_LEN);
+        
+        ssize_t bytes_written = 0;
+        char *ptr = (char *)&response;
+        while (bytes_written < (ssize_t)sizeof(IPC_Message)) {
+            ssize_t w = write(target_fd, ptr + bytes_written, sizeof(IPC_Message) - bytes_written);
+            if (w == -1) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            bytes_written += w;
+        }
+        close(target_fd);
+    }
+}
+
+int get_logical_state(const char* info_str) {
+    if (strstr(info_str, "Status: ON") || strstr(info_str, "Status: OPEN")) return 1;
+    if (strstr(info_str, "Status: OFF") || strstr(info_str, "Status: CLOSED")) return 0;
+    return -1; 
 }
 
 int main(int argc, char *argv[]) {
-  if (argc < 2) {
-    fprintf(stderr, "Usage: ./hub <id>\n");
-    exit(EXIT_FAILURE);
-  }
-
-  my_id = atoi(argv[1]);
-  sprintf(my_fifo, "%s%d.fifo", FIFO_PATH_PREFIX, my_id);
-  
-  parent_fd = open(parent_fifo, O_WRONLY);
-  if (parent_fd < 0) {
-    perror("Failed to open parent's fifo");
-    _exit(ERR_PIPE_BROKEN);
-  }
-
-  // termination
-  signal(SIGTERM, cleanup_and_exit);
-  signal(SIGINT, cleanup_and_exit);
-
-  // FIFO for this specific device
-  if (mkfifo(my_fifo, 0666) == -1 && errno != EEXIST) {
-    perror("mkfifo failed");
-    _exit(EXIT_FAILURE);
-  }
-
-  printf("[Hub %d] Ready. Listening on %s\n", my_id, my_fifo);
-
-  // open FIFO for reading (blocks until a writer connects)
-  // using O_RDWR prevents EOF when the writer closes the pipe
-  fifo_fd = open(my_fifo, O_RDWR);
-  if (fifo_fd < 0) {
-    perror("open fifo failed");
-    exit(EXIT_FAILURE);
-  }
-
-  init_routing_table(routing_table, MAX_CHILDREN);
-  IPC_Message msg;
-/*
-  fd_set read_fds;
-
-  int max_fd = fifo_fd;
-
-  FD_ZERO(&read_fds);
-  FD_ZERO(&write_fds);
-  FD_SET(fifo_fd, &read_fds);
-*/
-  while (1) {
-    ssize_t bytes = read(fifo_fd, &msg, sizeof(IPC_Message));
-    if (bytes > 0) {
-      printf("[Hub %d] Received command: %s\n", my_id, msg.command);
-      char **tokens = tokenise(msg.command);
-
-      // simulate processing latency (1 to 3 seconds)
-      sleep((rand() % 3) + 1);
-
-      switch msg.sender_id {
-        case parent_id:
-          if (strcmp(tokens[0], "switch") == 0) {
-            send_ipc_message(atoi(tokens[1]), my_id, msg.command);
-            is_on = (strcmp(toks[3], "on") == 0) ? 1 : 0;
-          } else if (strcmp(tokens[0], "link") == 0) {
-            link(atoi(tokens[1]));
-            send_ctl_ack("ack link\0");
-          }
-
-          send_ctl_ack("ack\0");
-          break;
-
-        case -1:
-          if (strcmp(toks[0], "switch") == 0) {
-            if (children == 0) {
-              printf("Hub: No children to control\n");
-              break;
-            }
-
-            if (
-              strcmp("on", toks[3]) == 0 || 
-              strcmp("off", toks[0]) == 0
-            ) 
-            {
-              for (int i=0; i < children; ++i) {
-                send_ipc_message(
-                  routing_table[i].logical_id, 
-                  my_id,
-                  msg.command
-                );
-              }
-            }
-            
-          }
-          break;
-
-        default:
-          int child_id = find_device_index(msg.sender_id);
-          if (child_id == -1) break;
-          if (msg.target_id != my_id) {
-            send_ipc_message(msg.target_id, msg.sender_id, msg.command);
-          } else {
-            // handle valid child-parent cmds/notifications
-          }
-      }
+    if (argc < 2) {
+        fprintf(stderr, "Usage: ./hub <id>\n");
+        exit(EXIT_FAILURE);
     }
-  }
 
-      // TODO: Send acknowledgment back to Controller via CONTROLLER_FIFO
+    my_id = atoi(argv[1]);
+    snprintf(my_fifo, sizeof(my_fifo), "%s%d.fifo", FIFO_PATH_PREFIX, my_id);
 
-  return 0;
+    signal(SIGTERM, cleanup_and_exit);
+    signal(SIGINT, cleanup_and_exit);
+    srand(time(NULL) ^ (getpid() << 16));
+
+    if (mkfifo(my_fifo, 0666) == -1 && errno != EEXIST) {
+        perror("mkfifo failed");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("[Hub %d] Ready. Listening on %s\n", my_id, my_fifo);
+    fifo_fd = open(my_fifo, O_RDWR | O_NONBLOCK);
+
+    IPC_Message msg;
+    while (1) {
+        ssize_t total_read = 0;
+        char *ptr = (char *)&msg;
+
+        while (total_read < (ssize_t)sizeof(IPC_Message)) {
+            ssize_t bytes = read(fifo_fd, ptr + total_read, sizeof(IPC_Message) - total_read);
+            if (bytes > 0) {
+                total_read += bytes;
+            } else if (bytes == 0 || (bytes == -1 && errno == EAGAIN)) {
+                if (total_read == 0) usleep(10000); 
+                break; 
+            } else {
+                if (errno == EINTR) continue;
+                break;
+            }
+        }
+
+        if (total_read == sizeof(IPC_Message)) {
+            if (strncmp(msg.command, "ACK:", 4) == 0 || strncmp(msg.command, "OVERRIDE", 8) == 0) continue;
+
+            printf("[Hub %d] Received command: %s\n", my_id, msg.command);
+            sleep((rand() % 3) + 1); 
+
+            int is_manual_override = (msg.sender_id == -1);
+
+            if (strncmp(msg.command, "set_parent ", 11) == 0) {
+                sscanf(msg.command, "set_parent %d", &parent_id);
+            }
+            else if (strncmp(msg.command, "add_child ", 10) == 0) {
+                int child_id;
+                if (sscanf(msg.command, "add_child %d", &child_id) == 1) {
+                    children[num_children++] = child_id;
+                    printf("[Hub %d] Linked child %d\n", my_id, child_id);
+                }
+            }
+            else if (strncmp(msg.command, "switch ", 7) == 0) {
+                for (int i = 0; i < num_children; i++) {
+                    send_to_child(children[i], msg.command);
+                }
+                char response[MAX_CMD_LEN];
+                snprintf(response, sizeof(response), "ACK: Hub %d propagated action to %d children", my_id, num_children);
+                send_response(msg.sender_id, response, is_manual_override);
+            }
+            else if (strncmp(msg.command, "info", 4) == 0) {
+                if (num_children == 0) {
+                    send_response(msg.sender_id, "INFO: Hub Status: EMPTY | Connected: 0", is_manual_override);
+                    continue;
+                }
+
+                for (int i = 0; i < num_children; i++) {
+                    send_to_child(children[i], "info");
+                }
+
+                int states_match = 1;
+                int first_logical_state = -1;
+                int collected = 0;
+                time_t start_wait = time(NULL);
+
+                while (collected < num_children && difftime(time(NULL), start_wait) < 5.0) {
+                    IPC_Message child_reply;
+                    if (read(fifo_fd, &child_reply, sizeof(IPC_Message)) == sizeof(IPC_Message)) {
+                        int current_state = get_logical_state(child_reply.command);
+                        if (collected == 0) {
+                            first_logical_state = current_state;
+                        } else if (first_logical_state != current_state) {
+                            states_match = 0;
+                        }
+                        collected++;
+                    } else {
+                        usleep(10000); 
+                    }
+                }
+
+                char info_buffer[MAX_CMD_LEN];
+                if (!states_match) {
+                    snprintf(info_buffer, sizeof(info_buffer), "INFO: Hub ID %d | Status: MANUAL OVERRIDE | Connected: %d", my_id, num_children);
+                } else {
+                    snprintf(info_buffer, sizeof(info_buffer), "INFO: Hub ID %d | Status: %s | Connected: %d", my_id, (first_logical_state == 1) ? "ON/OPEN" : "OFF/CLOSED", num_children);
+                }
+                send_response(msg.sender_id, info_buffer, is_manual_override);
+            }
+            else {
+                send_response(msg.sender_id, "ERR: Unsupported command", is_manual_override);
+            }
+        } 
+    }
+    return 0;
 }

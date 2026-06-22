@@ -8,38 +8,41 @@ int main(int argc, char *argv[]) {
 
     int target_id = atoi(argv[1]);
 
-    // rebuild the command by concatenating remaining arguments
+    // Rebuild the command using strncat (before was strcat) to avoid buffer overflows
     char full_command[MAX_CMD_LEN] = "";
     for(int i = 2; i < argc; i++) {
-        strcat(full_command, argv[i]);
-        if(i < argc - 1) strcat(full_command, " ");
+        strncat(full_command, argv[i], MAX_CMD_LEN - strlen(full_command) - 1);
+        if(i < argc - 1) {
+            strncat(full_command, " ", MAX_CMD_LEN - strlen(full_command) - 1);
+        }
     }
 
     char fifo_path[128];
     sprintf(fifo_path, "%s%d.fifo", FIFO_PATH_PREFIX, target_id);
 
-    // open the device's pipe in write-only mode
+    // Open the device's pipe in write-only mode
     int fd = open(fifo_path, O_WRONLY);
     if (fd == -1) {
         perror("Error: Device does not exist or FIFO is not ready");
         exit(EXIT_FAILURE);
     }
 
-    // prepare the binary structure to send
+    // Prepare the binary structure to send
     IPC_Message msg;
-    msg.sender_id = 0; // 0 o -1 to indicate an external override
+    msg.sender_id = -1; // -1 indicates an EXTERNAL MANUAL OVERRIDE (NOT the Controller) --> allows devices to 
+                        //check msg.sender_id ot know instantly if it's manual interaction
     msg.target_id = target_id;
     strncpy(msg.command, full_command, MAX_CMD_LEN - 1);
     msg.command[MAX_CMD_LEN - 1] = '\0';
 
-    // write the exact bytes of the struct to the pipe
+    // Write the exact bytes of the struct to the pipe
     if (write(fd, &msg, sizeof(IPC_Message)) == -1) {
         perror("Failed to send command");
         close(fd);
         exit(EXIT_FAILURE);
     }
 
-    printf("Sent '%s' to Device %d via binary IPC\n", full_command, target_id);
+    printf("[Manual Override] Sent '%s' to Device %d via binary IPC\n", full_command, target_id);
     close(fd);
     return SUCCESS;
 }

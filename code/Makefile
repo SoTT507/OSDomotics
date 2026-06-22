@@ -3,9 +3,11 @@ CFLAGS = -Wall -Wextra -std=gnu17 -g
 # the gnu17 standard spec. is to prevent OSx or Windows(more likely) eventually blowing up or something strange IDK
 # (default for Ubuntu 24.04)
 
+SCENARIO ?= basic
+
 all: build
 
-build: controller bulb window fridge
+build: controller bulb window fridge manual_interaction
 
 controller: src/controller.c src/common.h
 	$(CC) $(CFLAGS) -o controller src/controller.c
@@ -34,4 +36,5 @@ clean:
 	rm -f /tmp/test_stdin.fifo
 
 run: build
-	./controller
+	chmod +x run_demo.sh
+	./run_demo.sh $(SCENARIO)

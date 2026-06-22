@@ -23,6 +23,7 @@ manual_interaction: src/manual_interaction.c src/common.h
 clean:
 	rm -f controller bulb manual_interaction
 	rm -f /tmp/domotics_*.fifo
+	rm -f /tmp/test_stdin.fifo
 
 run: build
-	./controller
+	./build.sh run $(ARGS)

@@ -9,23 +9,24 @@ ARGS="$@"
 case "$COMMAND" in
 build)
     echo "Compilation..."
-    # Compile all components into the current directory so execl("./bulb") works
+    # Compiliamo tutti i componenti nella cartella corrente
     gcc -Wall -Wextra -std=gnu17 -g src/controller.c -o controller
     gcc -Wall -Wextra -std=gnu17 -g src/bulb.c -o bulb
-    gcc -Wall -Wextra -std=gnu17 -g src/manual_interaction.c -o manual_interaction
+    gcc -Wall -Wextra -std=gnu17 -g src/window.c -o window
+    gcc -Wall -Wextra -std=gnu17 -g src/fridge.c -o fridge
     echo "Compiled successfully!"
     ;;
 
 clean)
     echo "Cleanup..."
-    # Remove executables
-    rm -f controller bulb manual_interaction
-    # Remove pipe (FIFO) for the IPC
+    # Rimuoviamo tutti gli eseguibili inclusi i nuovi dispositivi
+    rm -f controller bulb window fridge manual_interaction
+    # Rimuoviamo le pipe (FIFO) dell'IPC
     rm -f /tmp/domotics_*.fifo
     rm -f /tmp/test_stdin.fifo
     echo "System reset complete"
     ;;
-
+    
 run)
     echo "================================================"
     echo "             DOMOTICS OS - DEMO"

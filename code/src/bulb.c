@@ -1,5 +1,4 @@
 #include "common.h"
-#include <time.h>
 
 int my_id;
 int parent_id = 0;
@@ -7,22 +6,16 @@ int is_on = 0; // 0 = off, 1 = on
 char my_fifo[128];
 int fifo_fd;
 
-// Device State and Registry Parameters
-int is_on = 0;             // 0 = off, 1 = on
-long total_on_time = 0;    // Registry: cumulative time left active
-time_t on_start_time = 0;  // Timestamp of when the device was turned on
+// Registry variables for tracking on-time (Registry: time)
+time_t total_time_on = 0;
+time_t last_turn_on_time = 0;
 
 void cleanup_and_exit(int sig) {
-    printf("\n[Bulb %d] Shutting down...\n", my_id);
-    
-    // If the process terminates while active, update the total active time
-    if (is_on && on_start_time > 0) {
-        total_on_time += (long)(time(NULL) - on_start_time);
-    }
-    
-    close(fifo_fd);
-    unlink(my_fifo); // Remove named pipe from filesystem
-    exit(0);
+  (void)sig; // Suppress unused parameter warning
+  printf("\n[Bulb %d] Shutting down...\n", my_id);
+  close(fifo_fd);
+  unlink(my_fifo); // Remove named pipe from filesystem
+  exit(0);
 }
 
 // support function to send messages to the Controller
@@ -69,10 +62,10 @@ void send_response(int requester_id, const char* response_str, int is_override) 
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: ./bulb <id>\n");
-        exit(EXIT_FAILURE);
-    }
+  if (argc < 2) {
+    fprintf(stderr, "Usage: ./bulb <id>\n");
+    exit(EXIT_FAILURE);
+  }
 
   my_id = atoi(argv[1]);
   sprintf(my_fifo, "%s%d.fifo", FIFO_PATH_PREFIX, my_id);
@@ -90,14 +83,15 @@ int main(int argc, char *argv[]) {
     exit(EXIT_FAILURE);
   }
 
-    printf("[Bulb %d] Ready. Listening on %s\n", my_id, my_fifo);
+  printf("[Bulb %d] Ready. Listening on %s\n", my_id, my_fifo);
 
-    // O_RDWR prevents EOF when readers/writers switch cycles
-    fifo_fd = open(my_fifo, O_RDWR);
-    if (fifo_fd < 0) {
-        perror("open fifo failed");
-        exit(EXIT_FAILURE);
-    }
+  // open FIFO for reading (blocks until a writer connects)
+  // using O_RDWR prevents EOF when the writer closes the pipe
+  fifo_fd = open(my_fifo, O_RDWR);
+  if (fifo_fd < 0) {
+    perror("open fifo failed");
+    exit(EXIT_FAILURE);
+  }
 
   IPC_Message msg;
   while (1) {
@@ -196,5 +190,5 @@ int main(int argc, char *argv[]) {
     }
   }
 
-    return 0;
+  return 0;
 }

@@ -164,7 +164,7 @@ int main(int argc, char *argv[]) {
       char action[32];
       char state[32];
 
-      // 1. Comando INFO
+      // ------ INFO ------
       if (strstr(msg.command, "info") != NULL) {
         long current_time_on = (long)total_open_time;
         if (is_open) {
@@ -178,40 +178,62 @@ int main(int argc, char *argv[]) {
                  
         send_response(msg.sender_id, info_buffer, is_manual_override);
       } 
-                    
-        else if (sscanf(msg.command, "switch %31s %31s", action, state) == 2 && (strcmp(action, "open") == 0)) {
-                if (strcmp(state, "on") == 0) {
-                  if (!is_open) {
-                    is_open = 1;
-                    last_open_time = time(NULL);
-                  }
-                  char response[MAX_CMD_LEN];
-                  snprintf(response, sizeof(response), "Fridge %d door turned OPEN", my_id);
-                  send_response(msg.sender_id, response, is_manual_override);
-                } else if (strcmp(state, "off") == 0) {
-                  if (is_open) {
-                    is_open = 0;
-                    total_open_time += difftime(time(NULL), last_open_time);
-                  }
-                  char response[MAX_CMD_LEN];
-                  snprintf(response, sizeof(response), "Fridge %d door turned CLOSED", my_id);
-                  send_response(msg.sender_id, response, is_manual_override);
-                } else {
-                  send_response(msg.sender_id, "ERR: Unsupported command", is_manual_override);
-        }
-      } 
-      
-              // 3. Comando LINK / SET_PARENT
-      else if (strstr(msg.command, "set_parent") != NULL) {
-        sscanf(msg.command, "set_parent %d", &parent_id);
-        printf("[Fridge %d] Parent updated to %d\n", my_id, parent_id);
-      }
 
-      else if (strstr(msg.command, "thermo") != NULL) {
-        double val;
-        if (sscanf(msg.command, "switch thermostat %lf", &val) == 1 || sscanf(msg.command, "thermostat %lf", &val) == 1) {
-          thermostat = val;
-          send_response(msg.sender_id, "Thermostat updated successfully", is_manual_override);
+      // ------ SWITCH OPEN/CLOSE ------              
+        else if (sscanf(msg.command, "switch %31s %31s", action, state) == 2 && (strcmp(action, "open") == 0)) {
+          if (strcmp(state, "on") == 0) {
+            if (!is_open) {
+              is_open = 1;
+              last_open_time = time(NULL);
+            }
+            char response[MAX_CMD_LEN];
+            snprintf(response, sizeof(response), "Fridge %d door turned OPEN", my_id);
+            send_response(msg.sender_id, response, is_manual_override);
+          
+          } else if (strcmp(state, "off") == 0) {      
+            if (is_open) {
+              is_open = 0;
+              total_open_time += difftime(time(NULL), last_open_time);
+            }
+            char response[MAX_CMD_LEN];
+            snprintf(response, sizeof(response), "Fridge %d door turned CLOSED", my_id);
+            send_response(msg.sender_id, response, is_manual_override);
+          } else {
+            send_response(msg.sender_id, "ERR: Unsupported command", is_manual_override);
+          }
+        } 
+        
+        else if (strstr(msg.command, "set_parent") != NULL) {
+          sscanf(msg.command, "set_parent %d", &parent_id);
+          printf("[Fridge %d] Parent updated to %d\n", my_id, parent_id);
+        }
+
+        // modify thermostat and fill percentage (ONLY THROUGH MANUAL OVERRIDE)
+        else if (strstr(msg.command, "thermostat") != NULL || strstr(msg.command, "perc") != NULL) {
+        
+        // These variables can ONLY be modified by bypassing the Controller
+        if (!is_manual_override) {
+            send_response(msg.sender_id, "ERR: Thermostat and content (perc) can ONLY be modified manually", is_manual_override);
+        } else {
+            double temp_val;
+            int perc_val;
+            
+            // Parsing for the thermostat
+            if (sscanf(msg.command, "switch thermostat %lf", &temp_val) == 1 || sscanf(msg.command, "thermostat %lf", &temp_val) == 1) {
+                thermostat = temp_val;
+                send_response(msg.sender_id, "Thermostat updated successfully", is_manual_override);
+            }
+            // Parsing for the fill percentage
+            else if (sscanf(msg.command, "switch perc %d", &perc_val) == 1 || sscanf(msg.command, "perc %d", &perc_val) == 1) {
+                if (perc_val >= 0 && perc_val <= 100) {
+                  percentage = perc_val;
+                  send_response(msg.sender_id, "Fill percentage updated successfully", is_manual_override);
+                } else {
+                  send_response(msg.sender_id, "ERR: Percentage must be between 0 and 100", is_manual_override);
+                }
+            } else {
+              send_response(msg.sender_id, "ERR: Invalid syntax for manual parameter update", is_manual_override);
+            }
         }
       }
 

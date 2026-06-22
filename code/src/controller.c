@@ -3,6 +3,9 @@
 Device routing_table[MAX_DEVICES];
 int next_logical_id = 1;
 
+// Global atomic flag for signal safety
+volatile sig_atomic_t child_terminated = 0;
+
 // initializes the routing table
 void init_routing_table()
 {
@@ -26,37 +29,44 @@ int find_device_index(int logical_id)
     return -1;
 }
 
-// signal manager for child processes (Crash or termination)
+// // signal manager for child processes (Crash or termination)
+// void handle_sigchld(int sig)
+// {
+//     int status;
+//     pid_t pid;
+
+//     // WNOHANG allows the controller to not block if there are multiple terminated
+//     // children
+//     while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+//     {
+//         // finds the device in the table via PID
+//         for (int i = 0; i < MAX_DEVICES; i++)
+//         {
+//             if (routing_table[i].is_active && routing_table[i].pid == pid)
+//             {
+//                 routing_table[i].is_active = 0; // marks as inactive
+//                 if (WIFSIGNALED(status))
+//                 {
+//                     // the process was terminated unexpectedly (e.g. kill -9)
+//                     printf("\n[Alarm] Device ID %d (Tipo: %s, PID: %d) has CRASHED "
+//                            "(Segnale %d)!\n",
+//                            routing_table[i].logical_id, routing_table[i].type, pid,
+//                            WTERMSIG(status));
+//                     // TODO: here would be added the logic to alert via IPC eventual
+//                     // parent/children
+//                 }
+//                 break;
+//             }
+//         }
+//         break;
+//     }
+// }
+
+// minimal, async-signal-safe signal handler
 void handle_sigchld(int sig)
 {
-    int status;
-    pid_t pid;
-
-    // WNOHANG allows the controller to not block if there are multiple terminated
-    // children
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
-    {
-        // finds the device in the table via PID
-        for (int i = 0; i < MAX_DEVICES; i++)
-        {
-            if (routing_table[i].is_active && routing_table[i].pid == pid)
-            {
-                routing_table[i].is_active = 0; // marks as inactive
-                if (WIFSIGNALED(status))
-                {
-                    // the process was terminated unexpectedly (e.g. kill -9)
-                    printf("\n[Alarm] Device ID %d (Tipo: %s, PID: %d) has CRASHED "
-                           "(Segnale %d)!\n",
-                           routing_table[i].logical_id, routing_table[i].type, pid,
-                           WTERMSIG(status));
-                    // TODO: here would be added the logic to alert via IPC eventual
-                    // parent/children
-                }
-                break;
-            }
-        }
-        break;
-    }
+    (void)sig; // suppress unused parameter warning
+    child_terminated = 1;
 }
 
 // function to send an IPC message to a device
@@ -78,14 +88,58 @@ int send_ipc_message(int target_logical_id, int sender_id, const char* cmd_strin
     msg.target_id = target_logical_id;
     strncpy(msg.command, cmd_string, MAX_CMD_LEN);
 
-    if (write(fd, &msg, sizeof(IPC_Message)) == -1) {
-        perror("Error writing to device FIFO");
-        close(fd);
-        return ERR_PIPE_BROKEN;
+    // if (write(fd, &msg, sizeof(IPC_Message)) == -1) {
+    //     perror("Error writing to device FIFO");
+    //     close(fd);
+    //     return ERR_PIPE_BROKEN;
+    // }
+
+    // Write loop that guarantee full transfer
+    ssize_t bytes_written = 0;
+    char *ptr = (char *)&msg;
+    
+    while (bytes_written < (ssize_t)sizeof(IPC_Message)) {
+        ssize_t w = write(fd, ptr + bytes_written, sizeof(IPC_Message) - bytes_written);
+        if (w == -1) {
+            if (errno == EINTR) continue; // Interrupted by signal, retry
+            if (errno == EAGAIN) {
+                // Pipe is full. In a perfect world, we would queue this.
+                perror("Error: Device FIFO is full (EAGAIN)");
+                close(fd);
+                return ERR_PIPE_BROKEN;
+            }
+            perror("Error writing to device FIFO");
+            close(fd);
+            return ERR_PIPE_BROKEN;
+        }
+        bytes_written += w;
     }
 
     close(fd);
     return SUCCESS;
+}
+
+// returns 1 if a cycle is detected, 0 otherwise
+int check_for_cycles(int child_id, int new_parent_id) {
+    // Base case: a device cannot be the parent of itself
+    if (child_id == new_parent_id) return 1; 
+
+    int current_node = new_parent_id;
+    
+    // Iterates the tree upwards until the root (0 = Controller)
+    while (current_node != 0) { 
+        int idx = find_device_index(current_node);
+        if (idx == -1) break; // Safety: node not found (shouldn't happen but who knows)
+        
+        int parent_of_current = routing_table[idx].parent_id;
+
+        // if one of the parents of the new parent is the child we are connecting --> cycle!
+        if (parent_of_current == child_id) {
+            return 1; 
+        }
+        current_node = parent_of_current;
+    }
+    return 0; // No cycle found
 }
 
 int main()
@@ -100,8 +154,7 @@ int main()
     struct sigaction sa;
     sa.sa_handler = handle_sigchld;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags =
-        SA_RESTART | SA_NOCLDSTOP; // SA_RESTART restarts select() if interrupted
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP; // SA_RESTART restarts select() if interrupted
     if (sigaction(SIGCHLD, &sa, NULL) == -1)
     {
         perror("Error: sigaction");
@@ -113,6 +166,7 @@ int main()
     // open in O_RDWR --> otherwise, in O_RDONLY, read() would return EOF (0) as
     // soon as the last writer closes the pipe --> O_RDWR keeps the pipe open
     controller_fifo_fd = open(CONTROLLER_FIFO, O_RDWR);
+
     if (controller_fifo_fd == -1)
     {
         perror("Error opening FIFO controller");
@@ -136,6 +190,35 @@ int main()
         // select() awaits blocking until data is available on the keyboard or FIFO
         int activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
 
+
+        //Handle dead children synchronously in the main loop (was on handle_sigchld before)
+        if (child_terminated)
+        {
+            child_terminated = 0; // Reset flag
+            int status;
+            pid_t pid;
+
+            while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+            {
+                for (int i = 0; i < MAX_DEVICES; i++)
+                {
+                    if (routing_table[i].is_active && routing_table[i].pid == pid)
+                    {
+                        routing_table[i].is_active = 0;
+                        if (WIFSIGNALED(status))
+                        {
+                            printf("\n[Alarm] Device ID %d (Tipo: %s, PID: %d) has CRASHED (Segnale %d)!\n",
+                                   routing_table[i].logical_id, routing_table[i].type, pid, WTERMSIG(status));
+                        }
+                        break;
+                    }
+                }
+            }
+            printf("domotics> ");
+            fflush(stdout);
+        }
+
+
         if (activity < 0 && errno != EINTR)
         {
             perror("Error: select");
@@ -144,9 +227,12 @@ int main()
         // IS A COMMAND ARRIVED FROM THE USER (KEYBOARD)?
         if (FD_ISSET(STDIN_FILENO, &read_fds))
         {
-            if (fgets(input, MAX_CMD_LEN, stdin) == NULL)
-                break;
+            // FIX C: Read unbuffered raw bytes from descriptor to prevent select() desync
+            ssize_t n = read(STDIN_FILENO, input, MAX_CMD_LEN - 1);
+            if (n <= 0)
+                break; // EOF or Error
 
+            input[n] = '\0';
             input[strcspn(input, "\n")] = 0; // remove \n
             if (strlen(input) == 0)
             {
@@ -212,10 +298,11 @@ int main()
                                 routing_table[i].pid = pid;
                                 strcpy(routing_table[i].type, device_type);
                                 routing_table[i].is_active = 1;
+                                routing_table[i].parent_id = 0; // default parent is Controller
                                 break;
                             }
                         }
-                        printf("[Controller] Spawneed '%s' with logic ID %d (PID: %d)\n", device_type, new_id, pid);
+                        printf("[Controller] Spawned '%s' with logic ID %d (PID: %d)\n", device_type, new_id, pid);
                     }
                 }
             }
@@ -238,12 +325,40 @@ int main()
                 // The pattern "link %d to %d" does all the work for us
                 if (sscanf(input, "link %d to %d", &id1, &id2) == 2)
                 {
-                    printf("[Controller] Linking device %d to parent device %d\n", id1,
-                           id2);
-                    // TODO: update routing table and notify via IPC
-                }
-                else
-                {
+                    int idx1 = find_device_index(id1);
+                    int idx2 = find_device_index(id2);
+
+                    // to verify that the devices exists (id2==0 is valid by default)
+                    if (idx1 != -1 && (idx2 != -1 || id2 == 0)) {
+                        // REQ: id2 MUST be a Control Device (hub, timer or Controller)
+                        // the controller which is the first created, has ID 0, thus id2 == 0 is always valid
+                        if (strcmp(routing_table[idx2].type, "hub") != 0 && strcmp(routing_table[idx2].type, "timer") != 0 && id2 != 0) {
+                            
+                            printf("Error (Code %d): The device %d (%s) is NOT a Control Device.\n", 
+                            ERR_DEVICE_TYPE_MISMATCH, id2, routing_table[idx2].type);
+                        }else{
+                            char cmd_buffer[MAX_CMD_LEN];
+
+                            printf("[Controller] Linking devices: %d set to be child of %d\n", id1, id2);
+
+                            routing_table[idx1].parent_id = id2;
+
+                            // sending IPC to the child device (id1) informing it of the new parent (id2)
+                            snprintf(cmd_buffer, sizeof(cmd_buffer), "set_parent %d", id2);
+                            send_ipc_message(id1, 0, cmd_buffer);
+
+                            // sending IPC to the parent device (id2) informing it of the new child (id1)
+                            // if the parent is the controller (id2 == 0), we don't send the IPC message, we just update our logical table.
+                            if (id2 != 0) {
+                                snprintf(cmd_buffer, sizeof(cmd_buffer), "add_child %d", id1);
+                                send_ipc_message(id2, 0, cmd_buffer);
+                            }
+                            printf("[Controller] Link command sent successfully.\n");
+                        }
+                    } else {
+                        printf("Errore: Impossible to find one or both devices (ID1: %d, ID2: %d).\n", id1, id2);
+                    }
+                } else {
                     printf("Error: Invalid syntax. Use: link <id1> to <id2>\n");
                 }
             }

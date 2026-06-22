@@ -57,6 +57,7 @@ typedef struct {
   pid_t pid;
   char type[32];
   int is_active;
+  int parent_id; // ID of the parent device (0 for Controller)
 } Device;
 
 //-----------------------------------------------

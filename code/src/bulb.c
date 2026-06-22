@@ -6,11 +6,12 @@ int is_on = 0; // 0 = off, 1 = on
 char my_fifo[128];
 int fifo_fd;
 
-// Variabili per tracciare il tempo di accensione (Registry: time)
+// Registry variables for tracking on-time (Registry: time)
 time_t total_time_on = 0;
 time_t last_turn_on_time = 0;
 
 void cleanup_and_exit(int sig) {
+  (void)sig; // Suppress unused parameter warning
   printf("\n[Bulb %d] Shutting down...\n", my_id);
   close(fifo_fd);
   unlink(my_fifo); // Remove named pipe from filesystem

@@ -27,7 +27,7 @@ int main(int argc, char *argv[]) {
 
     // prepare the binary structure to send
     IPC_Message msg;
-    msg.sender_id = 0; // 0 o -1 per indicare un utente esterno/manual override
+    msg.sender_id = 0; // 0 o -1 to indicate an external override
     msg.target_id = target_id;
     strncpy(msg.command, full_command, MAX_CMD_LEN - 1);
     msg.command[MAX_CMD_LEN - 1] = '\0';

@@ -7,9 +7,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
+#include <time.h>
 
 // ------------- Error codes ----------------
 
@@ -37,11 +40,25 @@
 #define FIFO_PATH_PREFIX "/tmp/domotics_dev_"
 #define CONTROLLER_FIFO "/tmp/domotics_controller.fifo"
 
+// --------------- STRUTTURE DATI ----------------
+
 // IPC Message Structure
 typedef struct {
   int sender_id;
   int target_id;
   char command[MAX_CMD_LEN];
 } IPC_Message;
+
+#define MAX_DEVICES 100
+
+// Routing Table to keep track of devices
+typedef struct {
+  int logical_id;
+  pid_t pid;
+  char type[32];
+  int is_active;
+} Device;
+
+//-----------------------------------------------
 
 #endif

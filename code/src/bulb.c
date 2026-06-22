@@ -42,7 +42,18 @@ void send_response(int requester_id, const char* response_str, int is_override) 
         response.sender_id = my_id;
         response.target_id = (requester_id == -1) ? 0 : requester_id; // 0 = Controller
         strncpy(response.command, response_str, MAX_CMD_LEN);
-        write(target_fd, &response, sizeof(IPC_Message));
+        // Safe write loop
+        ssize_t bytes_written = 0;
+        char *ptr = (char *)&response;
+        while (bytes_written < (ssize_t)sizeof(IPC_Message)) {
+            ssize_t w = write(target_fd, ptr + bytes_written, sizeof(IPC_Message) - bytes_written);
+            if (w == -1) {
+                if (errno == EINTR) continue;
+                perror("[Bulb] Error writing to target FIFO");
+                break;
+            }
+            bytes_written += w;
+        }
         close(target_fd);
     } else {
         perror("[Bulb] Error trying to open target FIFO");
@@ -83,8 +94,25 @@ int main(int argc, char *argv[]) {
 
   IPC_Message msg;
   while (1) {
-    ssize_t bytes = read(fifo_fd, &msg, sizeof(IPC_Message));
-    if (bytes > 0) {
+    ssize_t total_read = 0;
+    char *ptr = (char *)&msg;
+
+    // Safe read loop
+    while (total_read < (ssize_t)sizeof(IPC_Message)) {
+        ssize_t bytes = read(fifo_fd, ptr + total_read, sizeof(IPC_Message) - total_read);
+        if (bytes > 0) {
+            total_read += bytes;
+        } else if (bytes == 0) {
+            break; // EOF
+        } else {
+            if (errno == EINTR) continue;
+            perror("[Bulb] read error");
+            break;
+        }
+    }
+
+
+    if (total_read == sizeof(IPC_Message)) {
       printf("[Bulb %d] Received command: %s\n", my_id, msg.command);
 
       // simulate processing latency (1 to 3 seconds)
@@ -151,6 +179,13 @@ int main(int argc, char *argv[]) {
       else {
         send_response(msg.sender_id, "ERR: Unsupported command", is_manual_override);
       }
+    } 
+    
+    else if (total_read > 0) {
+      printf("[Bulb %d] Discarded partial message (%zd bytes)\n", my_id, total_read);
+    } else {
+      // Prevent aggressive spin loop if FIFO hangs in an unexpected error state
+      usleep(100000); 
     }
   }
 

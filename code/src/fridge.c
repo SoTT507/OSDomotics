@@ -173,8 +173,8 @@ int main(int argc, char *argv[]) {
 
         char info_buffer[MAX_CMD_LEN];
         snprintf(info_buffer, sizeof(info_buffer), 
-                 "INFO: Fridge ID %d | Status: %s | Temp: %.1fC | Thermo: %.1fC | Fill: %d%% | Total time open: %ld sec", 
-                 my_id, is_open ? "OPEN" : "CLOSED", current_temp, thermostat, percentage, current_time_on);
+                 "INFO: Fridge ID %d | Status: %s | Temp: %.1fC | Thermo: %.1fC | Fill: %d%% | Delay: %d sec | Total time open: %ld sec", 
+                 my_id, is_open ? "OPEN" : "CLOSED", current_temp, thermostat, percentage, delay_time, current_time_on);
                  
         send_response(msg.sender_id, info_buffer, is_manual_override);
       } 
@@ -213,15 +213,16 @@ int main(int argc, char *argv[]) {
         
         // These variables can ONLY be modified by bypassing the Controller
         if (!is_manual_override) {
-            send_response(msg.sender_id, "ERR: Thermostat and content (perc) can ONLY be modified manually", is_manual_override);
-        } else {
+          send_response(msg.sender_id, "ERR: Thermostat and content (perc) can ONLY be modified manually", is_manual_override);
+        } 
+        else {
             double temp_val;
             int perc_val;
             
             // Parsing for the thermostat
             if (sscanf(msg.command, "switch thermostat %lf", &temp_val) == 1 || sscanf(msg.command, "thermostat %lf", &temp_val) == 1) {
-                thermostat = temp_val;
-                send_response(msg.sender_id, "Thermostat updated successfully", is_manual_override);
+              thermostat = temp_val;
+              send_response(msg.sender_id, "Thermostat updated successfully", is_manual_override);
             }
             // Parsing for the fill percentage
             else if (sscanf(msg.command, "switch perc %d", &perc_val) == 1 || sscanf(msg.command, "perc %d", &perc_val) == 1) {

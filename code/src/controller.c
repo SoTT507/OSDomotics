@@ -13,40 +13,55 @@ int next_logical_id = 1;
 // Global atomic flag for signal safety
 volatile sig_atomic_t child_terminated = 0;
 
+// initializes the routing table
+void init_routing_table()
+{
+    for (int i = 0; i < MAX_DEVICES; i++)
+    {
+        routing_table[i].is_active = 0;
+    }
+}
+
 #define find_dev_index(id) find_device_index(id, routing_table)
 
-// signal manager for child processes (Crash or termination)
-/*
+// // signal manager for child processes (Crash or termination)
+// void handle_sigchld(int sig)
+// {
+//     int status;
+//     pid_t pid;
+
+//     // WNOHANG allows the controller to not block if there are multiple terminated
+//     // children
+//     while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+//     {
+//         // finds the device in the table via PID
+//         for (int i = 0; i < MAX_DEVICES; i++)
+//         {
+//             if (routing_table[i].is_active && routing_table[i].pid == pid)
+//             {
+//                 routing_table[i].is_active = 0; // marks as inactive
+//                 if (WIFSIGNALED(status))
+//                 {
+//                     // the process was terminated unexpectedly (e.g. kill -9)
+//                     printf("\n[Alarm] Device ID %d (Tipo: %s, PID: %d) has CRASHED "
+//                            "(Segnale %d)!\n",
+//                            routing_table[i].logical_id, routing_table[i].type, pid,
+//                            WTERMSIG(status));
+//                     // TODO: here would be added the logic to alert via IPC eventual
+//                     // parent/children
+//                 }
+//                 break;
+//             }
+//         }
+//         break;
+//     }
+// }
+
+// minimal, async-signal-safe signal handler
 void handle_sigchld(int sig)
 {
-    int status;
-    pid_t pid;
-
-    // WNOHANG allows the controller to not block if there are multiple terminated
-    // children
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
-    {
-        // finds the device in the table via PID
-        for (int i = 0; i < MAX_DEVICES; i++)
-        {
-            if (routing_table[i].is_active && routing_table[i].pid == pid)
-            {
-                routing_table[i].is_active = 0; // marks as inactive
-                if (WIFSIGNALED(status))
-                {
-                    // the process was terminated unexpectedly (e.g. kill -9)
-                    printf("\n[Alarm] Device ID %d (Tipo: %s, PID: %d) has CRASHED "
-                           "(Segnale %d)!\n",
-                           routing_table[i].logical_id, routing_table[i].type, pid,
-                           WTERMSIG(status));
-                    // TODO: here would be added the logic to alert via IPC eventual
-                    // parent/children
-                }
-                break;
-            }
-        }
-        break;
-    }
+    (void)sig; // suppress unused parameter warning
+    child_terminated = 1;
 }
 */
 
@@ -55,6 +70,63 @@ void handle_sigchld(int sig)
 {
     (void)sig; // suppress unused parameter warning
     child_terminated = 1;
+}
+
+// returns 1 if a cycle is detected, 0 otherwise
+int check_for_cycles(int child_id, int new_parent_id) {
+    // Base case: a device cannot be the parent of itself
+    if (child_id == new_parent_id) return 1; 
+
+    int current_node = new_parent_id;
+    
+    // Iterates the tree upwards until the root (0 = Controller)
+    while (current_node != 0) { 
+        int idx = find_device_index(current_node);
+        if (idx == -1) break; // Safety: node not found (shouldn't happen but who knows)
+        
+        int parent_of_current = routing_table[idx].parent_id;
+
+        // if one of the parents of the new parent is the child we are connecting --> cycle!
+        if (parent_of_current == child_id) {
+            return 1; 
+        }
+        current_node = parent_of_current;
+    }
+
+    IPC_Message msg;
+    msg.sender_id = sender_id;
+    msg.target_id = target_logical_id;
+    strncpy(msg.command, cmd_string, MAX_CMD_LEN);
+
+    // if (write(fd, &msg, sizeof(IPC_Message)) == -1) {
+    //     perror("Error writing to device FIFO");
+    //     close(fd);
+    //     return ERR_PIPE_BROKEN;
+    // }
+
+    // Write loop that guarantee full transfer
+    ssize_t bytes_written = 0;
+    char *ptr = (char *)&msg;
+    
+    while (bytes_written < (ssize_t)sizeof(IPC_Message)) {
+        ssize_t w = write(fd, ptr + bytes_written, sizeof(IPC_Message) - bytes_written);
+        if (w == -1) {
+            if (errno == EINTR) continue; // Interrupted by signal, retry
+            if (errno == EAGAIN) {
+                // Pipe is full. In a perfect world, we would queue this.
+                perror("Error: Device FIFO is full (EAGAIN)");
+                close(fd);
+                return ERR_PIPE_BROKEN;
+            }
+            perror("Error writing to device FIFO");
+            close(fd);
+            return ERR_PIPE_BROKEN;
+        }
+        bytes_written += w;
+    }
+
+    close(fd);
+    return SUCCESS;
 }
 
 // returns 1 if a cycle is detected, 0 otherwise
@@ -305,7 +377,7 @@ int main()
                 int target_id;
                 char label[32], pos[32];
                 if (sscanf(input, "switch %d %31s %31s", &target_id, label, pos) == 3){
-                    if (find_dev_index(target_id) != -1) {
+                    if (find_device_index(target_id) != -1) {
                         char cmd_buffer[MAX_CMD_LEN];
                         // formatting the command to send to the device
                         snprintf(cmd_buffer, sizeof(cmd_buffer), "switch %s %s", label, pos);

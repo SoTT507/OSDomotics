@@ -1,48 +1,70 @@
 #include "common.h"
+#include <time.h>
 
 int my_id;
-int is_on = 0; // 0 = off, 1 = on
+int parent_id = 0;
+int is_open = 0; // 0 = closed, 1 = open
 char my_fifo[128];
-//char *parent_fifo = CONTROLLER_FIFO;
 int fifo_fd;
-int parent_fd;
-int parent_id;
 
-typedef struct {
-  int time;
-} window_reg;
+// Registry variables for tracking open-time (Registry: time)
+time_t total_open_time = 0;
+time_t last_open_time = 0;
 
 void cleanup_and_exit(int sig) {
-  printf("\n[Bulb %d] Shutting down...\n", my_id);
+  (void)sig; // Suppress unused parameter warning
+  printf("\n[Window %d] Shutting down...\n", my_id);
+  if (is_open) {
+    total_open_time += difftime(time(NULL), last_open_time);
+  }
   close(fifo_fd);
   unlink(my_fifo); // Remove named pipe from filesystem
   exit(0);
 }
 
-int send_ctl_ack(char *ack_str){
-  IPC_Message ack_msg = {my_id, parent_id, ack_str};
-  if (write(parent_fd, (char*)&ack_msg, sizeof(IPC_Message)) == -1) {
-    perror("send_ctl_ack()");
-    return ERR_PIPE_BROKEN;
+// support function to send messages to the Controller (Identica a bulb.c)
+void send_response(int requester_id, const char* response_str, int is_override) {
+  char target_fifo[128];
+  char final_message[MAX_CMD_LEN];  
+
+  if (is_override) {
+    snprintf(final_message, MAX_CMD_LEN, "OVERRIDE (Manual): %s", response_str);
+  } else {
+    strncpy(final_message, response_str, MAX_CMD_LEN);
+    final_message[MAX_CMD_LEN - 1] = '\0';
   }
-  return SUCCESS;
-}
 
-int link(int const par_id){
-  char *parent_path;
-  sprintf(parent_path, "%s%d", FIFO_PATH_PREFIX, par_id);
-  int tmp_pfd = open(parent_fifo, O_WRONLY);
-
-  if (tmp_pfd == -1) {
-    // notify failed link
-    return ERR_PIPE_BROKEN;
+  if (requester_id == 0 || requester_id == -1) {
+    // respond to controller
+    strcpy(target_fifo, CONTROLLER_FIFO);
+  } else {
+    // respond to logical parent (Hub/Timer) that made the request
+    snprintf(target_fifo, sizeof(target_fifo), "%s%d.fifo", FIFO_PATH_PREFIX, requester_id);
   }
-  // or dup2(tmp_pfd, parent_fd)
-  close(parent_fd);
-  parent_fd = tmp_pfd;
-  parent_id = par_id;
 
-  return SUCCESS;
+  int target_fd = open(target_fifo, O_WRONLY | O_NONBLOCK);
+  if (target_fd != -1) {
+    IPC_Message response;
+    response.sender_id = my_id;
+    response.target_id = (requester_id == -1) ? 0 : requester_id; // 0 = Controller
+    strncpy(response.command, final_message, MAX_CMD_LEN); // Copia il messaggio finale con OVERRIDE/ACK completi
+    
+    // Safe write loop
+    ssize_t bytes_written = 0;
+    char *ptr = (char *)&response;
+    while (bytes_written < (ssize_t)sizeof(IPC_Message)) {
+      ssize_t w = write(target_fd, ptr + bytes_written, sizeof(IPC_Message) - bytes_written);
+      if (w == -1) {
+        if (errno == EINTR) continue;
+        perror("[Window] Error writing to target FIFO");
+        break;
+      }
+      bytes_written += w;
+    }
+    close(target_fd);
+  } else {
+    perror("[Window] Error trying to open target FIFO");
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -53,64 +75,110 @@ int main(int argc, char *argv[]) {
 
   my_id = atoi(argv[1]);
   sprintf(my_fifo, "%s%d.fifo", FIFO_PATH_PREFIX, my_id);
-  
-  char *parent_path;
-  sprintf(parent_path, "%s%d", FIFO_PATH_PREFIX, 0);
-  parent_fd = open(parent_path, O_WRONLY);
-  if (parent_fd < 0) {
-    perror("Failed to open parent's fifo");
-    _exit(ERR_PIPE_BROKEN);
-  }
 
   // termination
   signal(SIGTERM, cleanup_and_exit);
   signal(SIGINT, cleanup_and_exit);
 
+  // initializes the random number generator (for the sleep)
+  srand(time(NULL) ^ (getpid() << 16));
+
   // FIFO for this specific device
   if (mkfifo(my_fifo, 0666) == -1 && errno != EEXIST) {
     perror("mkfifo failed");
-    _exit(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
 
   printf("[Window %d] Ready. Listening on %s\n", my_id, my_fifo);
 
-  // open FIFO for reading (blocks until a writer connects)
-  // using O_RDWR prevents EOF when the writer closes the pipe
   fifo_fd = open(my_fifo, O_RDWR);
   if (fifo_fd < 0) {
     perror("open fifo failed");
     exit(EXIT_FAILURE);
   }
 
-  int tmp_time;
-  window_reg my_reg;
   IPC_Message msg;
-  
   while (1) {
-    ssize_t bytes = read(fifo_fd, &msg, sizeof(IPC_Message));
-    if (bytes > 0) {
+    ssize_t total_read = 0;
+    char *ptr = (char *)&msg;
+
+    // Safe read loop
+    while (total_read < (ssize_t)sizeof(IPC_Message)) {
+      ssize_t bytes = read(fifo_fd, ptr + total_read, sizeof(IPC_Message) - total_read);
+      if (bytes > 0) {
+        total_read += bytes;
+      } else if (bytes == 0) {
+        break; // EOF
+      } else {
+        if (errno == EINTR) continue;
+        perror("[Window] read error");
+        break;
+      }
+    }
+
+    if (total_read == sizeof(IPC_Message)) {
       printf("[Window %d] Received command: %s\n", my_id, msg.command);
-      char **tokens = tokenise(msg.command);
 
       // simulate processing latency (1 to 3 seconds)
       sleep((rand() % 3) + 1);
 
-      if (strncmp(msg.command, "switch power on", 15) == 0) {
-        tmp_time = time(NULL);
-        is_on = 1;
-        printf("[Window %d] Status changed to ON\n", my_id);
-      } else if (strncmp(msg.command, "switch power off", 16) == 0) {
-        my_reg.time = difftime(time(NULL), tmp_time);
-        is_on = 0;
-        printf("[Window %d] Status changed to OFF\n", my_id);
-      } else if (strcmp(tokens[0], "link") == 0) {
-        link(strtol(tokens[1], NULL, 10));
-        send_ctl_ack("ack link\0");
-      }
-    }
+      int is_manual_override = (msg.sender_id == -1);
 
-    send_ctl_ack("ack\0");
-      // TODO: Send acknowledgment back to Controller via CONTROLLER_FIFO
+      char action[32];
+      char state[32];
+
+      if (sscanf(msg.command, "switch %31s %31s", action, state) == 2 && (strcmp(action, "open") == 0)) {
+        if (strcmp(state, "on") == 0) {
+          if (!is_open) {
+            is_open = 1;
+            last_open_time = time(NULL);
+          }
+          char response[MAX_CMD_LEN];
+          snprintf(response, sizeof(response), "Window %d turned OPEN", my_id);
+          send_response(msg.sender_id, response, is_manual_override);
+        } else if (strcmp(state, "off") == 0) {
+          if (is_open) {
+            is_open = 0;
+            total_open_time += difftime(time(NULL), last_open_time);
+          }
+          char response[MAX_CMD_LEN];
+          snprintf(response, sizeof(response), "Window %d turned CLOSED", my_id);
+          send_response(msg.sender_id, response, is_manual_override);
+        } else {
+          send_response(msg.sender_id, "ERR: Unsupported command", is_manual_override);
+        }
+      }
+      
+      else if (strncmp(msg.command, "info", 4) == 0) {
+        long current_time_on = (long)total_open_time;
+        if (is_open) {
+          current_time_on += (long)difftime(time(NULL), last_open_time);
+        }
+
+        char info_buffer[MAX_CMD_LEN];
+        snprintf(info_buffer, sizeof(info_buffer),
+                 "INFO: Window ID %d | Status: %s | Total time open: %ld sec",
+                 my_id, is_open ? "OPEN" : "CLOSED", current_time_on);
+                 
+        send_response(msg.sender_id, info_buffer, is_manual_override);
+      }
+
+      // Comando SET_PARENT
+      else if (strncmp(msg.command, "set_parent ", 11) == 0) {
+        sscanf(msg.command, "set_parent %d", &parent_id);
+        printf("[Window %d] Parent updated to %d\n", my_id, parent_id);
+      }
+
+      else {
+        send_response(msg.sender_id, "ERR: Unsupported command", is_manual_override);
+      }
+    } 
+    
+    else if (total_read > 0) {
+      printf("[Window %d] Discarded partial message (%zd bytes)\n", my_id, total_read);
+    } else {
+      usleep(100000); 
+    }
   }
 
   return 0;

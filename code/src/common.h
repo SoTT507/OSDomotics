@@ -12,6 +12,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <time.h>
 
 // ------------- Error codes ----------------
 
@@ -25,10 +26,8 @@
 
 // Command and State Errors
 #define ERR_INVALID_COMMAND 201
-#define ERR_MANUAL_OVERRIDE                                                    \
-  202 // Used when Hub detects inconsistent child states
-#define ERR_UNSUPPORTED_SWITCH                                                 \
-  203 // e.g., trying to change fridge 'perc' via Controller
+#define ERR_MANUAL_OVERRIDE 202 // Used when Hub detects inconsistent child states
+#define ERR_UNSUPPORTED_SWITCH 203 // e.g., trying to change fridge 'perc' via Controller
 
 // System Errors
 #define ERR_PROCESS_CRASHED 301
@@ -59,11 +58,13 @@ typedef struct {
   pid_t pid;
   char type[32];
   int is_active;
+  int parent_id; // ID of the parent device (0 for Controller)
 } Device;
 
 //-----------------------------------------------
 char **tokenise(char*);
 void init_routing_table(Device[]);
 int find_device_index(int const, Device[]);
+int send_ipc_message(int, int, const char*);
 
 #endif

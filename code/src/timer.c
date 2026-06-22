@@ -8,8 +8,8 @@ char *parent_fifo = CONTROLLER_FIFO;
 int fifo_fd;
 int parent_fd;
 
-Device child = NULL;
-int child_fd = 0;
+Device *child = NULL;
+//int child_fd = 0;
 
 typedef struct {
   struct tm begin,
@@ -38,23 +38,30 @@ int link(int const child_id) {
     return ERR_LINK_FAILED;
   }
 
+  /*
   char *child_path;
   sprintf(child_path, "%s%d", FIFO_PATH_PREFIX, child_id);
-  child_fd = open(child_path, O_WRONLY);
+  */
+  //child_fd = open(child_path, O_WRONLY);
+  child = (Device*) malloc(sizeof(Device));
 
-  routing_table[i].logical_id = child_id;
-  routing_table[i].is_active = 1;
+  child->logical_id = child_id;
+  child->is_active = 1;
 
   return SUCCESS;
 }
 
 int init_itimerspec(struct itimerspec *tspec, struct const *tm _tm) {
-  tspec->it_interval = {0, 0};/*
-  tspec->it_value.tv_sec = difftime(
-    3600 * (_tm->tm_hour) + 60 * (_tm->tm_min),
-    time(NULL)
-  );*/
+  time_t tmp;
+  time(&tmp);
+  struct tm *_tm1 = localtime(&tmp);
+  _tm1->tm_sec = 0;
+  _tm1->tm_min = _tm.tm_min;
+  _tm1->tm_hour = _tm.tm_hour;
+  
+  tspec->it_value.tv_sec = difftime(mktime(_tm1), time(NULL));
   tspec->it_value.tv_nsec = 0;
+  tspec->it_interval = {0, 0};
 
   return SUCCESS;
 }
@@ -110,7 +117,9 @@ int main(int argc, char *argv[]) {
     int b_set = select(max_fd + 1, &read_fds, &write_fds, NULL, NULL);
     if (b_set == -1); //handle error
 
-    if (FD_ISSET(timer_0, &read_fds)); // power on child
+    if (FD_ISSET(timer_0, &read_fds)) {
+      send_ipc_message()
+    } // power on child
     if (FD_ISSET(timer_1, &read_fds)); // "" off ""
     
     if (FD_ISSET(fifo_fd, &read_fds)) {
@@ -130,8 +139,8 @@ int main(int argc, char *argv[]) {
             } else if (strcmp(tokens[0], "link") == 0) {
               link(atoi(tokens[1]));
               send_ctl_ack("ack link\0");
-              FD_SET(child_fd, &write_fds);
-              if (child_fd > max_fd) max_fd = child_fd;
+              //FD_SET(child_fd, &write_fds);
+              //if (child_fd > max_fd) max_fd = child_fd;
             }
 
             send_ctl_ack("ack\0");
@@ -139,13 +148,12 @@ int main(int argc, char *argv[]) {
 
           case -1:
             if (strcmp(toks[0], "set") == 0) {
+              if (child == NULL) {
+                printf("Timer: No child to control\n");
+                break;
+              }
               // ... [parse, checkbegin and end times]
-              sscanf(
-                msg.command, 
-                "set%d:%d %d:%d", 
-                my_reg.begin.tm_hour, my_reg.begin.tm_min,
-                my_reg.end.tm_hour, my_reg.end.tm_min
-              );
+              strptime(msg.command, "set %H:%M %H:%M", &my_reg.begin, &my_reg.end);
               
               timer_0 = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK);
               timer_1 = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK);
@@ -166,7 +174,7 @@ int main(int argc, char *argv[]) {
             }
             break;
 
-          case child.logical_id:
+          case child->logical_id:
             break;
         }
       }

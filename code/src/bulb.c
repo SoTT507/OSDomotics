@@ -1,11 +1,14 @@
 #include "common.h"
 
 int my_id;
+int parent_id = 0;
 int is_on = 0; // 0 = off, 1 = on
 char my_fifo[128];
-char *parent_fifo = CONTROLLER_FIFO;
 int fifo_fd;
-int parent_fd;
+
+// Variabili per tracciare il tempo di accensione (Registry: time)
+time_t total_time_on = 0;
+time_t last_turn_on_time = 0;
 
 void cleanup_and_exit(int sig) {
   printf("\n[Bulb %d] Shutting down...\n", my_id);
@@ -14,28 +17,47 @@ void cleanup_and_exit(int sig) {
   exit(0);
 }
 
-int send_ctl_ack(char *ack_str){
-  IPC_Message ack_msg = {my_id, 0, ack_str};
-  if (write(parent_fd, (char*)&ack_msg, sizeof(IPC_Message)) == -1) {
-    perror("send_ctl_ack()");
-    return ERR_PIPE_BROKEN;
+// support function to send messages to the Controller
+void send_response(int requester_id, const char* response_str, int is_override) {
+  char target_fifo[128];
+  char final_message[MAX_CMD_LEN];  
+
+  if (is_override) {
+    snprintf(final_message, MAX_CMD_LEN, "OVERRIDE (Manual): %s", response_str);
+  } else {
+    strncpy(final_message, response_str, MAX_CMD_LEN);
   }
-  return SUCCESS;
-}
 
-int link(int const par_id){
-  sprintf(parent_fifo, "%s%d", FIFO_PATH_PREFIX, par_id);
-  int tmp_pfd = open(parent_fifo, O_WRONLY);
-
-  if (tmp_pfd == -1) {
-    // notify failed link
-    return ERR_PIPE_BROKEN;
+  if (requester_id == 0 || requester_id == -1) {
+    // respond to controller
+    strcpy(target_fifo, CONTROLLER_FIFO);
+  } else {
+    // respond to logical parent (Hub/Timer) that made the request
+    snprintf(target_fifo, sizeof(target_fifo), "%s%d.fifo", FIFO_PATH_PREFIX, requester_id);
   }
-  // or dup2(tmp_pfd, parent_fd)
-  close(parent_fd);
-  parent_fd = tmp_pfd;
 
-  return SUCCESS;
+  int target_fd = open(target_fifo, O_WRONLY | O_NONBLOCK);
+    if (target_fd != -1) {
+        IPC_Message response;
+        response.sender_id = my_id;
+        response.target_id = (requester_id == -1) ? 0 : requester_id; // 0 = Controller
+        strncpy(response.command, response_str, MAX_CMD_LEN);
+        // Safe write loop
+        ssize_t bytes_written = 0;
+        char *ptr = (char *)&response;
+        while (bytes_written < (ssize_t)sizeof(IPC_Message)) {
+            ssize_t w = write(target_fd, ptr + bytes_written, sizeof(IPC_Message) - bytes_written);
+            if (w == -1) {
+                if (errno == EINTR) continue;
+                perror("[Bulb] Error writing to target FIFO");
+                break;
+            }
+            bytes_written += w;
+        }
+        close(target_fd);
+    } else {
+        perror("[Bulb] Error trying to open target FIFO");
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -46,21 +68,18 @@ int main(int argc, char *argv[]) {
 
   my_id = atoi(argv[1]);
   sprintf(my_fifo, "%s%d.fifo", FIFO_PATH_PREFIX, my_id);
-  
-  parent_fd = open(parent_fifo, O_WRONLY);
-  if (parent_fd < 0) {
-    perror("Failed to open parent's fifo");
-    _exit(ERR_PIPE_BROKEN);
-  }
 
   // termination
   signal(SIGTERM, cleanup_and_exit);
   signal(SIGINT, cleanup_and_exit);
 
+  // initializes the random number generator (for the sleep)
+  srand(time(NULL) ^ (getpid() << 16));
+
   // FIFO for this specific device
   if (mkfifo(my_fifo, 0666) == -1 && errno != EEXIST) {
     perror("mkfifo failed");
-    _exit(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
 
   printf("[Bulb %d] Ready. Listening on %s\n", my_id, my_fifo);
@@ -75,28 +94,99 @@ int main(int argc, char *argv[]) {
 
   IPC_Message msg;
   while (1) {
-    ssize_t bytes = read(fifo_fd, &msg, sizeof(IPC_Message));
-    if (bytes > 0) {
+    ssize_t total_read = 0;
+    char *ptr = (char *)&msg;
+
+    // Safe read loop
+    while (total_read < (ssize_t)sizeof(IPC_Message)) {
+        ssize_t bytes = read(fifo_fd, ptr + total_read, sizeof(IPC_Message) - total_read);
+        if (bytes > 0) {
+            total_read += bytes;
+        } else if (bytes == 0) {
+            break; // EOF
+        } else {
+            if (errno == EINTR) continue;
+            perror("[Bulb] read error");
+            break;
+        }
+    }
+
+
+    if (total_read == sizeof(IPC_Message)) {
       printf("[Bulb %d] Received command: %s\n", my_id, msg.command);
-      char **tokens = tokenise(msg.command);
 
       // simulate processing latency (1 to 3 seconds)
       sleep((rand() % 3) + 1);
 
-      if (strncmp(msg.command, "switch power on", 15) == 0) {
-        is_on = 1;
-        printf("[Bulb %d] Status changed to ON\n", my_id);
-      } else if (strncmp(msg.command, "switch power off", 16) == 0) {
-        is_on = 0;
-        printf("[Bulb %d] Status changed to OFF\n", my_id);
-      } else if (strcmp(tokens[0], "link") == 0) {
-        link(strtol(tokens[1], NULL, 10));
-        send_ctl_ack("ack link\0");
-      }
-    }
 
-    send_ctl_ack("ack\0");
-      // TODO: Send acknowledgment back to Controller via CONTROLLER_FIFO
+      int is_manual_override = (msg.sender_id == -1);
+      char prefix[32];
+
+
+      if (is_manual_override) {
+        strcpy(prefix, "OVERRIDE (Manual)");
+      } else {
+        strcpy(prefix, "ACK");
+      }
+
+
+      if (strncmp(msg.command, "switch power on", 15) == 0) {
+        if (!is_on) {
+            is_on = 1;
+            last_turn_on_time = time(NULL);
+        }
+        char response[MAX_CMD_LEN];
+        snprintf(response, sizeof(response), "%s: Bulb %d turned ON", prefix, my_id);
+        send_response(msg.sender_id, response, is_manual_override);
+      } 
+      
+
+      else if (strncmp(msg.command, "switch power off", 16) == 0) {
+          if (is_on) {
+            is_on = 0;
+            total_time_on += difftime(time(NULL), last_turn_on_time);
+          }
+        char response[MAX_CMD_LEN];
+        snprintf(response, sizeof(response), "%s: Bulb %d turned OFF", prefix, my_id);
+        send_response(msg.sender_id, response, is_manual_override);
+      
+      } 
+      
+
+      else if (strncmp(msg.command, "info", 4) == 0) {
+        // computes the startup time even if the bulb is currently ON
+        long current_time_on = (long)total_time_on;
+        if (is_on) {
+            current_time_on += (long)difftime(time(NULL), last_turn_on_time);
+        }
+
+        char info_buffer[MAX_CMD_LEN];
+        snprintf(info_buffer, sizeof(info_buffer), 
+                 "INFO: Bulb ID %d | Status: %s | Total time on: %ld sec", 
+                 my_id, is_on ? "ON" : "OFF", current_time_on);
+                 
+        send_response(msg.sender_id, info_buffer, is_manual_override);
+      }
+
+
+      else if (strncmp(msg.command, "set_parent ", 11) == 0) {
+        // Updates the parent_id when recieving the link command
+        sscanf(msg.command, "set_parent %d", &parent_id);
+        printf("[Bulb %d] Parent updated to %d\n", my_id, parent_id);
+      }
+
+
+      else {
+        send_response(msg.sender_id, "ERR: Unsupported command", is_manual_override);
+      }
+    } 
+    
+    else if (total_read > 0) {
+      printf("[Bulb %d] Discarded partial message (%zd bytes)\n", my_id, total_read);
+    } else {
+      // Prevent aggressive spin loop if FIFO hangs in an unexpected error state
+      usleep(100000); 
+    }
   }
 
   return 0;

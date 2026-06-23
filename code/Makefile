@@ -37,4 +37,4 @@ clean:
 
 run: build
 	chmod +x run_demo.sh
-	./run_demo.sh $(SCENARIO)
+	./run_demo.sh $(if $(ARGS),$(ARGS),$(SCENARIO))

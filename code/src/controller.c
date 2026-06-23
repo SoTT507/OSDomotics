@@ -116,7 +116,7 @@ int main() {
     fflush(stdout); 
 
     while (1) {
-        // 1. Gestione sicura dei segnali PRIMA della select
+        // handling signals BEFORE the select
         if (child_terminated) {
             child_terminated = 0; 
             int status;

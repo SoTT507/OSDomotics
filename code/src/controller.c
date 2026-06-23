@@ -1,9 +1,15 @@
 #include "common.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 Device routing_table[MAX_DEVICES];
 int next_logical_id = 1;
 
-// Global atomic flag for signal safety
 volatile sig_atomic_t child_terminated = 0;
 
 void init_routing_table() {
@@ -21,9 +27,8 @@ int find_device_index(int logical_id) {
     return -1;
 }
 
-// minimal, async-signal-safe signal handler
 void handle_sigchld(int sig) {
-    (void)sig; // suppress unused parameter warning
+    (void)sig; 
     child_terminated = 1;
 }
 
@@ -42,7 +47,6 @@ int send_ipc_message(int target_logical_id, int sender_id, const char* cmd_strin
     msg.target_id = target_logical_id;
     strncpy(msg.command, cmd_string, MAX_CMD_LEN);
 
-    // Write loop that guarantees full transfer
     ssize_t bytes_written = 0;
     char *ptr = (char *)&msg;
     
@@ -66,7 +70,6 @@ int send_ipc_message(int target_logical_id, int sender_id, const char* cmd_strin
     return SUCCESS;
 }
 
-// returns 1 if a cycle is detected, 0 otherwise
 int check_for_cycles(int child_id, int new_parent_id) {
     if (child_id == new_parent_id) return 1; 
 
@@ -76,9 +79,8 @@ int check_for_cycles(int child_id, int new_parent_id) {
         if (idx == -1) break; 
         
         int parent_of_current = routing_table[idx].parent_id;
-        if (parent_of_current == child_id) {
-            return 1; 
-        }
+        if (parent_of_current == child_id) return 1; 
+        
         current_node = parent_of_current;
     }
     return 0; 
@@ -114,14 +116,7 @@ int main() {
     fflush(stdout); 
 
     while (1) {
-        FD_ZERO(&read_fds);
-        FD_SET(STDIN_FILENO, &read_fds);       
-        FD_SET(controller_fifo_fd, &read_fds); 
-
-        int max_fd = (controller_fifo_fd > STDIN_FILENO) ? controller_fifo_fd : STDIN_FILENO;
-
-        int activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
-
+        // 1. Gestione sicura dei segnali PRIMA della select
         if (child_terminated) {
             child_terminated = 0; 
             int status;
@@ -132,8 +127,11 @@ int main() {
                     if (routing_table[i].is_active && routing_table[i].pid == pid) {
                         routing_table[i].is_active = 0;
                         if (WIFSIGNALED(status)) {
-                            printf("\n[Alarm] Device ID %d (Tipo: %s, PID: %d) has CRASHED (Segnale %d)!\n",
+                            printf("\n[Alarm] Device ID %d (Type: %s, PID: %d) has CRASHED (Signal %d)!\n",
                                    routing_table[i].logical_id, routing_table[i].type, pid, WTERMSIG(status));
+                        } else if (WIFEXITED(status)) {
+                            printf("\n[Controller] Device ID %d (Type: %s, PID: %d) cleanly shut down.\n",
+                                   routing_table[i].logical_id, routing_table[i].type, pid);
                         }
                         break;
                     }
@@ -143,17 +141,38 @@ int main() {
             fflush(stdout);
         }
 
-        if (activity < 0 && errno != EINTR) {
+        FD_ZERO(&read_fds);
+        FD_SET(STDIN_FILENO, &read_fds);       
+        FD_SET(controller_fifo_fd, &read_fds); 
+
+        int max_fd = (controller_fifo_fd > STDIN_FILENO) ? controller_fifo_fd : STDIN_FILENO;
+
+        int activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
+
+        // 2. Protezione totale da EINTR per evitare false letture
+        if (activity < 0) {
+            if (errno == EINTR) continue; 
             perror("Error: select");
             break;
         }
 
         if (FD_ISSET(STDIN_FILENO, &read_fds)) {
-            ssize_t n = read(STDIN_FILENO, input, MAX_CMD_LEN - 1);
-            if (n <= 0) break; 
+            
+            // 3. Lettura byte-by-byte per non ingoiare multipli comandi accodati dal bash script
+            int i = 0;
+            char c;
+            ssize_t n;
+            while (i < MAX_CMD_LEN - 1) {
+                n = read(STDIN_FILENO, &c, 1);
+                if (n <= 0) break;
+                if (c == '\n' || c == '\r') break;
+                input[i++] = c;
+            }
+            input[i] = '\0';
 
-            input[n] = '\0';
-            input[strcspn(input, "\n")] = 0; 
+            // Uscita sicura tramite EOF del bash script
+            if (n <= 0 && i == 0) break; 
+
             if (strlen(input) == 0) {
                 printf("domotics> ");
                 fflush(stdout);
@@ -189,6 +208,10 @@ int main() {
                     if (pid < 0) {
                         perror("Error in fork");
                     } else if (pid == 0) {
+                        // 4. Chiusura dei file descriptor nel figlio per non impedire l'EOF allo script
+                        close(STDIN_FILENO);
+                        close(controller_fifo_fd);
+
                         char id_str[16];
                         sprintf(id_str, "%d", new_id);
                         char exec_path[64];
@@ -216,8 +239,8 @@ int main() {
                 if (sscanf(input, "del %d", &target_id) == 1) {
                     int index = find_device_index(target_id);
                     if (index != -1) {
-                        printf("[Controller] Terminating device ID %d (PID %d)...\n", target_id, routing_table[index].pid);
-                        kill(routing_table[index].pid, SIGTERM); 
+                        printf("[Controller] Sending cascade termination to device ID %d...\n", target_id);
+                        send_ipc_message(target_id, 0, "del"); // sending IPC command instead of kill
                     } else {
                         printf("Error: Device ID %d not found.\n", target_id);
                     }

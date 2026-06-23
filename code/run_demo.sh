@@ -61,6 +61,34 @@ case "$SCENARIO" in
         send_cmd "exit" 2
         ;;
 
+        sandbox)
+        echo -e "\n--- RUNNING SANDBOX ENVIRONMENT ---"
+        # Prepariamo un ambiente ricco di dispositivi
+        send_cmd "add hub" 1
+        send_cmd "add timer" 1
+        send_cmd "add bulb" 1
+        send_cmd "add window" 1
+        send_cmd "add fridge" 1
+        
+        # Creiamo una gerarchia: Hub controlla Bulb e Window. Timer controlla Fridge.
+        send_cmd "link 3 to 1" 1
+        send_cmd "link 4 to 1" 1
+        send_cmd "link 5 to 2" 1
+        send_cmd "list" 1
+        
+        echo -e "\n========================================================="
+        echo "                SANDBOX READY"
+        echo "========================================================="
+        
+        # Passiamo il controllo al tuo terminale
+        while read -r user_input; do
+            echo "$user_input" >&3
+            if [ "$user_input" = "exit" ]; then
+                break
+            fi
+        done
+        ;;
+
     *)
         echo "Error: Unknown scenario '$SCENARIO'."
         echo "Available scenarios: basic, stress, error_check"

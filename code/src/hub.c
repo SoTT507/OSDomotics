@@ -124,8 +124,19 @@ int main(int argc, char *argv[]) {
         }
 
         if (total_read == sizeof(IPC_Message)) {
-            if (strncmp(msg.command, "ACK:", 4) == 0 || strncmp(msg.command, "OVERRIDE", 8) == 0) continue;
 
+            // ignores asynnchronous ACK and INFO to avoid loop
+            if (strncmp(msg.command, "ACK:", 4) == 0 || strncmp(msg.command, "OVERRIDE", 8) == 0 || strncmp(msg.command, "INFO:", 5) == 0) {
+                continue;
+            }
+
+            // if recieving error from child --> forward to Controller (ID = 0)
+            if (strncmp(msg.command, "ERR:", 4) == 0) {
+                send_response(0, msg.command, 0); // 0 indicates the Controller's FIFO
+                continue;
+            }
+          
+          
             printf("[Hub %d] Received command: %s\n", my_id, msg.command);
             sleep((rand() % 3) + 1); 
 
@@ -187,8 +198,18 @@ int main(int argc, char *argv[]) {
                 }
                 send_response(msg.sender_id, info_buffer, is_manual_override);
             }
+            else if (strcmp(msg.command, "del") == 0) {
+                // Cascading della cancellazione ai figli tramite IPC
+                for (int i = 0; i < num_children; i++) {
+                    send_to_child(children[i], "del");
+                }
+                usleep(50000); // Piccola pausa per assicurare l'invio IPC
+                cleanup_and_exit(SIGTERM);
+            }
             else {
-                send_response(msg.sender_id, "ERR: Unsupported command", is_manual_override);
+                char err_msg[MAX_CMD_LEN];
+                snprintf(err_msg, sizeof(err_msg), "ERR (Code %d): Unsupported command for Hub %d.", ERR_INVALID_COMMAND, my_id);
+                send_response(msg.sender_id, err_msg, is_manual_override);
             }
         } 
     }

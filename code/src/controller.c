@@ -158,7 +158,7 @@ int main() {
 
         if (FD_ISSET(STDIN_FILENO, &read_fds)) {
             
-            // 3. Lettura byte-by-byte per non ingoiare multipli comandi accodati dal bash script
+            // reading byte-by-byte to not ignore multiple commands queued by the bash script
             int i = 0;
             char c;
             ssize_t n;
@@ -208,7 +208,7 @@ int main() {
                     if (pid < 0) {
                         perror("Error in fork");
                     } else if (pid == 0) {
-                        // 4. Chiusura dei file descriptor nel figlio per non impedire l'EOF allo script
+                        // close file descriptor in child to not mess with the bash script's EOF
                         close(STDIN_FILENO);
                         close(controller_fifo_fd);
 
@@ -252,16 +252,16 @@ int main() {
                     int idx1 = find_device_index(id1);
                     int idx2 = find_device_index(id2);
 
-                    // Controllo esistenza dispositivi
+                    // control device existence
                     if (idx1 == -1 || (id2 != 0 && idx2 == -1)) {
                         printf("Error (Code %d): One or both devices not found.\n", ERR_DEVICE_NOT_FOUND);
                     } 
-                    // Controllo tipo dispositivo padre (deve essere Hub, Timer o Controller=0)
+                    // control parent device type (must be Hub, Timer or Controller=0)
                     else if (id2 != 0 && strcmp(routing_table[idx2].type, "hub") != 0 && strcmp(routing_table[idx2].type, "timer") != 0) {
                         printf("Error (Code %d): Device %d (%s) cannot be a parent (Control Device required).\n", 
                                ERR_DEVICE_TYPE_MISMATCH, id2, routing_table[idx2].type);
                     } 
-                    // Controllo cicli
+                    // control cycles
                     else if (check_for_cycles(id1, id2)) {
                         printf("Error (Code %d): Circular link detected. Operation aborted.\n", ERR_CIRCULAR_LINK);
                     } 

@@ -24,7 +24,7 @@ int main(int argc, char *argv[]) {
     char fifo_path[128];
     snprintf(fifo_path, sizeof(fifo_path), "%s%d.fifo", FIFO_PATH_PREFIX, target_id);
 
-    // 4. Apertura della FIFO in modalità Sola Scrittura
+    // opening FIFO in write-only mode
     int fd = open(fifo_path, O_WRONLY);
     if (fd == -1) {
         fprintf(stderr, "Error: Device %d does not exist or the FIFO is not ready (%s).\n", target_id, fifo_path);

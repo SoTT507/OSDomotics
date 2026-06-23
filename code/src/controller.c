@@ -95,58 +95,6 @@ int check_for_cycles(int child_id, int new_parent_id) {
     return 0; 
 }
 
-static void collect_descendants(int parent_id, int *buffer, int *count, int max_count) {
-    for (int i = 0; i < MAX_DEVICES; i++) {
-        if (routing_table[i].is_active && routing_table[i].parent_id == parent_id) {
-            int child_id = routing_table[i].logical_id;
-            if (*count < max_count) {
-                buffer[(*count)++] = child_id;
-            }
-            collect_descendants(child_id, buffer, count, max_count);
-        }
-    }
-}
-
-static void cascade_delete_device(int target_id) {
-    int affected_ids[MAX_DEVICES];
-    int affected_count = 0;
-    collect_descendants(target_id, affected_ids, &affected_count, MAX_DEVICES);
-
-    for (int i = affected_count - 1; i >= 0; i--) {
-        (void)send_ipc_message(affected_ids[i], 0, "del");
-    }
-    (void)send_ipc_message(target_id, 0, "del");
-
-    const int max_wait_seconds = 6;
-    for (int elapsed = 0; elapsed < max_wait_seconds; elapsed++) {
-        int still_active = 0;
-        if (find_device_index(target_id) != -1) {
-            still_active = 1;
-        }
-        for (int i = 0; i < affected_count; i++) {
-            if (find_device_index(affected_ids[i]) != -1) {
-                still_active = 1;
-            }
-        }
-
-        if (!still_active) {
-            return;
-        }
-
-        sleep(1);
-    }
-
-    if (find_device_index(target_id) != -1) {
-        kill(routing_table[find_device_index(target_id)].pid, SIGTERM);
-    }
-    for (int i = 0; i < affected_count; i++) {
-        int idx = find_device_index(affected_ids[i]);
-        if (idx != -1) {
-            kill(routing_table[idx].pid, SIGTERM);
-        }
-    }
-}
-
 int main() {
     char input[MAX_CMD_LEN];
     int controller_fifo_fd;
@@ -210,7 +158,7 @@ int main() {
 
         int activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
 
-        // 2. Protezione totale da EINTR per evitare false letture
+        // protection from EINTR to avoid false reads
         if (activity < 0) {
             if (errno == EINTR) continue; 
             perror("Error: select");
@@ -231,7 +179,7 @@ int main() {
             }
             input[i] = '\0';
 
-            // Uscita sicura tramite EOF del bash script
+            // exit on EOF or read error
             if (n <= 0 && i == 0) break; 
 
             if (strlen(input) == 0) {
@@ -309,7 +257,7 @@ int main() {
                     int index = find_device_index(target_id);
                     if (index != -1) {
                         printf("[Controller] Sending cascade termination to device ID %d...\n", target_id);
-                        cascade_delete_device(target_id);
+                        send_ipc_message(target_id, 0, "del"); // Deleghiamo tutto via IPC!
                     } else {
                         printf("Error: Device ID %d not found.\n", target_id);
                     }

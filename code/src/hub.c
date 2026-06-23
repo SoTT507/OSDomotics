@@ -138,7 +138,7 @@ int main(int argc, char *argv[]) {
             }
 
             // if recieving error from child --> forward to Controller (ID = 0)
-            if (strncmp(msg.command, "ERR:", 4) == 0) {
+            if (strncmp(msg.command, "ERR", 3) == 0) {
                 send_response(0, msg.command, 0); // 0 indicates the Controller's FIFO
                 continue;
             }

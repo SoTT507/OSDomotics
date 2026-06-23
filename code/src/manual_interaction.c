@@ -25,14 +25,14 @@ int main(int argc, char *argv[]) {
     snprintf(fifo_path, sizeof(fifo_path), "%s%d.fifo", FIFO_PATH_PREFIX, target_id);
 
     // opening FIFO in write-only mode
-    int fd = open(fifo_path, O_WRONLY);
+    int fd = open(fifo_path, O_WRONLY | O_NONBLOCK);
     if (fd == -1) {
         fprintf(stderr, "Error: Device %d does not exist or the FIFO is not ready (%s).\n", target_id, fifo_path);
         exit(ERR_DEVICE_NOT_FOUND); // Definito in common.h
     }
 
     // setup of binary IPC structure
-    IPC_Message msg;
+    IPC_Message msg = {0};
     msg.sender_id = -1; // -1 means an OVERRIDE from external source (not the Controller)
     msg.target_id = target_id;
     
@@ -41,10 +41,17 @@ int main(int argc, char *argv[]) {
     msg.command[MAX_CMD_LEN - 1] = '\0'; // forced termination for safety
 
     // writing of the struct bytes on the pipe
-    if (write(fd, &msg, sizeof(IPC_Message)) == -1) {
-        perror("Error during command sending on FIFO");
-        close(fd);
-        exit(ERR_PIPE_BROKEN);
+    ssize_t bytes_written = 0;
+    char *ptr = (char *)&msg;
+    while (bytes_written < (ssize_t)sizeof(IPC_Message)) {
+        ssize_t written = write(fd, ptr + bytes_written, sizeof(IPC_Message) - bytes_written);
+        if (written == -1) {
+            if (errno == EINTR) continue;
+            perror("Error during command sending on FIFO");
+            close(fd);
+            exit(ERR_PIPE_BROKEN);
+        }
+        bytes_written += written;
     }
 
     printf("[Manual Override] Command sent successfully to Device %d: '%s'\n", target_id, full_command);

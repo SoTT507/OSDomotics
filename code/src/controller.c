@@ -32,6 +32,14 @@ void handle_sigchld(int sig) {
     child_terminated = 1;
 }
 
+static int is_supported_device_type(const char *device_type) {
+    return strcmp(device_type, "bulb") == 0 ||
+           strcmp(device_type, "window") == 0 ||
+           strcmp(device_type, "fridge") == 0 ||
+           strcmp(device_type, "hub") == 0 ||
+           strcmp(device_type, "timer") == 0;
+}
+
 int send_ipc_message(int target_logical_id, int sender_id, const char* cmd_string) {
     char fifo_path[128];
     snprintf(fifo_path, sizeof(fifo_path), "%s%d.fifo", FIFO_PATH_PREFIX, target_logical_id);
@@ -42,10 +50,11 @@ int send_ipc_message(int target_logical_id, int sender_id, const char* cmd_strin
         return ERR_DEVICE_NOT_FOUND;
     }
 
-    IPC_Message msg;
+    IPC_Message msg = {0};
     msg.sender_id = sender_id;
     msg.target_id = target_logical_id;
-    strncpy(msg.command, cmd_string, MAX_CMD_LEN);
+    strncpy(msg.command, cmd_string, MAX_CMD_LEN - 1);
+    msg.command[MAX_CMD_LEN - 1] = '\0';
 
     ssize_t bytes_written = 0;
     char *ptr = (char *)&msg;
@@ -149,7 +158,7 @@ int main() {
 
         int activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
 
-        // 2. Protezione totale da EINTR per evitare false letture
+        // protection from EINTR to avoid false reads
         if (activity < 0) {
             if (errno == EINTR) continue; 
             perror("Error: select");
@@ -170,7 +179,7 @@ int main() {
             }
             input[i] = '\0';
 
-            // Uscita sicura tramite EOF del bash script
+            // exit on EOF or read error
             if (n <= 0 && i == 0) break; 
 
             if (strlen(input) == 0) {
@@ -202,6 +211,13 @@ int main() {
             else if (strncmp(input, "add ", 4) == 0) {
                 char device_type[32];
                 if (sscanf(input, "add %31s", device_type) == 1) {
+                    if (!is_supported_device_type(device_type)) {
+                        printf("Error: unsupported device type '%s'. Allowed: bulb, window, fridge, hub, timer.\n", device_type);
+                        printf("domotics> ");
+                        fflush(stdout);
+                        continue;
+                    }
+
                     int new_id = next_logical_id++;
                     pid_t pid = fork();
 
@@ -224,7 +240,8 @@ int main() {
                             if (!routing_table[i].is_active) {
                                 routing_table[i].logical_id = new_id;
                                 routing_table[i].pid = pid;
-                                strcpy(routing_table[i].type, device_type);
+                                strncpy(routing_table[i].type, device_type, sizeof(routing_table[i].type) - 1);
+                                routing_table[i].type[sizeof(routing_table[i].type) - 1] = '\0';
                                 routing_table[i].is_active = 1;
                                 routing_table[i].parent_id = 0; 
                                 break;
@@ -240,7 +257,7 @@ int main() {
                     int index = find_device_index(target_id);
                     if (index != -1) {
                         printf("[Controller] Sending cascade termination to device ID %d...\n", target_id);
-                        send_ipc_message(target_id, 0, "del"); // sending IPC command instead of kill
+                        send_ipc_message(target_id, 0, "del"); // Deleghiamo tutto via IPC!
                     } else {
                         printf("Error: Device ID %d not found.\n", target_id);
                     }
@@ -269,9 +286,16 @@ int main() {
                         printf("[Controller] Linking devices: %d set to be child of %d\n", id1, id2);
                         routing_table[idx1].parent_id = id2;
 
-                        // sending IPC commands with verification of the outcome
-                        int res1 = send_ipc_message(id1, 0, "set_parent"); // we can only pass the command, the device will parse it
-                        int res2 = (id2 != 0) ? send_ipc_message(id2, 0, "add_child") : SUCCESS;
+                        char child_cmd[MAX_CMD_LEN];
+                        snprintf(child_cmd, sizeof(child_cmd), "set_parent %d", id2);
+                        int res1 = send_ipc_message(id1, 0, child_cmd);
+
+                        int res2 = SUCCESS;
+                        if (id2 != 0) {
+                            char parent_cmd[MAX_CMD_LEN];
+                            snprintf(parent_cmd, sizeof(parent_cmd), "add_child %d", id1);
+                            res2 = send_ipc_message(id2, 0, parent_cmd);
+                        }
 
                         if (res1 != SUCCESS || res2 != SUCCESS) {
                             printf("Error (Code %d): Link failed during IPC communication.\n", ERR_LINK_FAILED);

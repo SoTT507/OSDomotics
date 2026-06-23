@@ -48,10 +48,11 @@ void send_response(int requester_id, const char* response_str, int is_override) 
 
   int target_fd = open(target_fifo, O_WRONLY | O_NONBLOCK);
   if (target_fd != -1) {
-    IPC_Message response;
+    IPC_Message response = {0};
     response.sender_id = my_id;
     response.target_id = (requester_id == -1) ? 0 : requester_id;
-    strncpy(response.command, final_message, MAX_CMD_LEN);
+    strncpy(response.command, final_message, MAX_CMD_LEN - 1);
+    response.command[MAX_CMD_LEN - 1] = '\0';
     
     // Safe write loop
     ssize_t bytes_written = 0;

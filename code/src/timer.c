@@ -22,15 +22,16 @@ void cleanup_and_exit(int sig) {
     exit(SUCCESS);
 }
 
-void send_to_child(int target, const char* cmd_string) {
+int send_to_child(int target, const char* cmd_string) {
     char fifo_path[128];
     snprintf(fifo_path, sizeof(fifo_path), "%s%d.fifo", FIFO_PATH_PREFIX, target);
     int fd = open(fifo_path, O_WRONLY | O_NONBLOCK);
     if (fd != -1) {
-        IPC_Message msg;
+        IPC_Message msg = {0};
         msg.sender_id = my_id;
         msg.target_id = target;
-        strncpy(msg.command, cmd_string, MAX_CMD_LEN);
+        strncpy(msg.command, cmd_string, MAX_CMD_LEN - 1);
+        msg.command[MAX_CMD_LEN - 1] = '\0';
         
         ssize_t bytes_written = 0;
         char *ptr = (char *)&msg;
@@ -38,12 +39,16 @@ void send_to_child(int target, const char* cmd_string) {
             ssize_t w = write(fd, ptr + bytes_written, sizeof(IPC_Message) - bytes_written);
             if (w == -1) {
                 if (errno == EINTR) continue;
+                close(fd);
+                return ERR_PIPE_BROKEN;
                 break;
             }
             bytes_written += w;
         }
         close(fd);
+        return SUCCESS;
     }
+    return ERR_DEVICE_NOT_FOUND;
 }
 
 void send_response(int requester_id, const char* response_str, int is_override) {
@@ -53,7 +58,8 @@ void send_response(int requester_id, const char* response_str, int is_override) 
     if (is_override) {
         snprintf(final_message, MAX_CMD_LEN, "OVERRIDE (Manual): %s", response_str);
     } else {
-        strncpy(final_message, response_str, MAX_CMD_LEN);
+        strncpy(final_message, response_str, MAX_CMD_LEN - 1);
+        final_message[MAX_CMD_LEN - 1] = '\0';
     }
 
     if (requester_id == 0 || requester_id == -1) {
@@ -64,10 +70,11 @@ void send_response(int requester_id, const char* response_str, int is_override) 
 
     int target_fd = open(target_fifo, O_WRONLY | O_NONBLOCK);
     if (target_fd != -1) {
-        IPC_Message response;
+        IPC_Message response = {0};
         response.sender_id = my_id;
         response.target_id = (requester_id == -1) ? 0 : requester_id;
-        strncpy(response.command, final_message, MAX_CMD_LEN);
+        strncpy(response.command, final_message, MAX_CMD_LEN - 1);
+        response.command[MAX_CMD_LEN - 1] = '\0';
         
         ssize_t bytes_written = 0;
         char *ptr = (char *)&response;
@@ -162,7 +169,7 @@ int main(int argc, char *argv[]) {
             }
 
             // if recieving error from child --> forward to Controller (ID = 0)
-            if (strncmp(msg.command, "ERR:", 4) == 0) {
+            if (strncmp(msg.command, "ERR", 3) == 0) {
                 send_response(0, msg.command, 0); // 0 indicates the Controller's FIFO
                 continue;
             }
@@ -178,27 +185,63 @@ int main(int argc, char *argv[]) {
                 sscanf(msg.command, "set_parent %d", &parent_id);
             }
             else if (strncmp(msg.command, "add_child ", 10) == 0) {
-                sscanf(msg.command, "add_child %d", &child_id);
-                printf("[Timer %d] Linked child %d\n", my_id, child_id);
+                int linked_child = -1;
+                if (sscanf(msg.command, "add_child %d", &linked_child) == 1) {
+                    child_id = linked_child;
+                    printf("[Timer %d] Linked child %d\n", my_id, child_id);
+                }
             }
             
             // Set Schedule (e.g., "switch begin 14:30")
             else if (sscanf(msg.command, "switch begin %d:%d", &h, &m) == 2 || sscanf(msg.command, "begin %d:%d", &h, &m) == 2) {
-                begin_h = h; begin_m = m;
-                has_triggered_begin = 0;
-                send_response(msg.sender_id, "ACK: Timer start schedule updated", is_manual_override);
+                if (h < 0 || h > 23 || m < 0 || m > 59) {
+                    send_response(msg.sender_id, "ERR (Code 201): Invalid HH:MM time for timer begin schedule", is_manual_override);
+                } else {
+                    time_t now = time(NULL);
+                    struct tm *current_time = localtime(&now);
+                    int now_minutes = current_time->tm_hour * 60 + current_time->tm_min;
+                    int begin_minutes = h * 60 + m;
+
+                    if (begin_minutes <= now_minutes) {
+                        send_response(msg.sender_id, "ERR (Code 201): Begin time must be in the future", is_manual_override);
+                    } else if (end_h != -1 && (begin_minutes >= (end_h * 60 + end_m))) {
+                        send_response(msg.sender_id, "ERR (Code 201): Begin time must be earlier than end time", is_manual_override);
+                    } else {
+                        begin_h = h; begin_m = m;
+                        has_triggered_begin = 0;
+                        send_response(msg.sender_id, "ACK: Timer start schedule updated", is_manual_override);
+                    }
+                }
             }
             else if (sscanf(msg.command, "switch end %d:%d", &h, &m) == 2 || sscanf(msg.command, "end %d:%d", &h, &m) == 2) {
-                end_h = h; end_m = m;
-                has_triggered_end = 0;
-                send_response(msg.sender_id, "ACK: Timer end schedule updated", is_manual_override);
+                if (h < 0 || h > 23 || m < 0 || m > 59) {
+                    send_response(msg.sender_id, "ERR (Code 201): Invalid HH:MM time for timer end schedule", is_manual_override);
+                } else {
+                    time_t now = time(NULL);
+                    struct tm *current_time = localtime(&now);
+                    int now_minutes = current_time->tm_hour * 60 + current_time->tm_min;
+                    int end_minutes = h * 60 + m;
+
+                    if (end_minutes <= now_minutes) {
+                        send_response(msg.sender_id, "ERR (Code 201): End time must be in the future", is_manual_override);
+                    } else if (begin_h != -1 && ((begin_h * 60 + begin_m) >= end_minutes)) {
+                        send_response(msg.sender_id, "ERR (Code 201): End time must be later than begin time", is_manual_override);
+                    } else {
+                        end_h = h; end_m = m;
+                        has_triggered_end = 0;
+                        send_response(msg.sender_id, "ACK: Timer end schedule updated", is_manual_override);
+                    }
+                }
             }
             
             // Passthrough for manual device switches
             else if (strncmp(msg.command, "switch ", 7) == 0) {
                 if (child_id != -1) {
-                    send_to_child(child_id, msg.command);
-                    send_response(msg.sender_id, "ACK: Command passed to child", is_manual_override);
+                    if (send_to_child(child_id, msg.command) == SUCCESS) {
+                        send_response(msg.sender_id, "ACK: Command passed to child", is_manual_override);
+                    } else {
+                        send_response(msg.sender_id, "ERR (Code 301): Timer could not reach child device", is_manual_override);
+                    }
                 } else {
                     send_response(msg.sender_id, "ERR: No child linked to timer", is_manual_override);
                 }
@@ -220,7 +263,7 @@ int main(int argc, char *argv[]) {
 
             else if (strcmp(msg.command, "del") == 0) {
                 if (child_id != -1) {
-                    send_to_child(child_id, "del");
+                    (void)send_to_child(child_id, "del");
                 }
                 usleep(50000);
                 cleanup_and_exit(SIGTERM);

@@ -7,11 +7,11 @@ int is_open = 0; // 0 = closed, 1 = open
 char my_fifo[128];
 int fifo_fd;
 
-// Variabili per il tracciamento del tempo (Registry: time)
+// variables for tracking time (Registry: time)
 time_t total_open_time = 0;
 time_t last_open_time = 0;
 
-// Parametri specifici del Frigorifero
+// specific parameters for the Fridge
 int delay_time = 5;       
 int percentage = 50;      
 double current_temp = 4.0; 
@@ -24,11 +24,11 @@ void cleanup_and_exit(int sig) {
     total_open_time += difftime(time(NULL), last_open_time);
   }
   close(fifo_fd);
-  unlink(my_fifo); // Rimuove la pipe dal filesystem
+  unlink(my_fifo); // remove the pipe from the filesystem
   exit(0);
 }
 
-// Funzione di supporto per inviare messaggi (Identica a bulb.c e window.c)
+// support function for sending messages
 void send_response(int requester_id, const char* response_str, int is_override) {
   char target_fifo[128];
   char final_message[MAX_CMD_LEN];  
@@ -53,7 +53,7 @@ void send_response(int requester_id, const char* response_str, int is_override) 
     response.target_id = (requester_id == -1) ? 0 : requester_id;
     strncpy(response.command, final_message, MAX_CMD_LEN);
     
-    // Safe write loop garantito
+    // Safe write loop
     ssize_t bytes_written = 0;
     char *ptr = (char *)&response;
     while (bytes_written < (ssize_t)sizeof(IPC_Message)) {
@@ -71,7 +71,7 @@ void send_response(int requester_id, const char* response_str, int is_override) 
   }
 }
 
-// Aggiornamento simulato della temperatura interna
+// simulated update of the internal temperature
 void update_temperature() {
   if (is_open) {
     if (current_temp < 20.0) current_temp += 0.5; // Si scalda se aperto
@@ -107,8 +107,8 @@ int main(int argc, char *argv[]) {
 
   printf("[Fridge %d] Ready. Listening on %s\n", my_id, my_fifo);
 
-  // NOTA: O_RDWR | O_NONBLOCK ci permette di non bloccarci sulla read se non ci sono comandi,
-  // così da poter aggiornare continuamente il tempo e le temperature in background.
+  // O_RDWR | O_NONBLOCK lets us to not get stuck on the read if there are no commands,
+  // thus we can update the time and temperatures in background.
   fifo_fd = open(my_fifo, O_RDWR | O_NONBLOCK);
   if (fifo_fd < 0) {
     perror("open fifo failed");
@@ -119,13 +119,13 @@ int main(int argc, char *argv[]) {
   time_t last_tick = time(NULL);
 
   while (1) {
-    // Gestione asincrona del tempo interno (1 secondo reale = 1 tick del sistema)
+    // asyncronous management of the internal time (1 real second = 1 system tick)
     time_t now = time(NULL);
     if (difftime(now, last_tick) >= 1.0) {
       last_tick = now;
       update_temperature();
 
-      // Meccanismo di Auto-Chiusura se viene superato il delay_time (5 secondi)
+      // auto-close the door if the delay_time is exceeded (5 seconds)
       if (is_open && difftime(now, last_open_time) >= delay_time) {
         is_open = 0;
         total_open_time += difftime(now, last_open_time);
@@ -142,7 +142,7 @@ int main(int argc, char *argv[]) {
       if (bytes > 0) {
         total_read += bytes;
       } else if (bytes == 0 || (bytes == -1 && errno == EAGAIN)) {
-        // Se la pipe è temporaneamente vuota usciamo per elaborare i cicli temporali
+        // if the pipe is temporarily empty we exit to process the temporal cycles
         if (total_read == 0) {
           usleep(10000); // 10ms per evitare l'uso intensivo della CPU
         }
@@ -157,14 +157,14 @@ int main(int argc, char *argv[]) {
     if (total_read == sizeof(IPC_Message)) {
       printf("[Fridge %d] Received command: %s\n", my_id, msg.command);
 
-      // Simula la latenza di elaborazione richiesta (1-3 secondi)
+      // simulates the latency of processing
       sleep((rand() % 3) + 1);
 
       int is_manual_override = (msg.sender_id == -1);
       char action[32];
       char state[32];
 
-      // 1. Comando INFO
+      // ------ INFO ------
       if (strstr(msg.command, "info") != NULL) {
         long current_time_on = (long)total_open_time;
         if (is_open) {
@@ -173,52 +173,86 @@ int main(int argc, char *argv[]) {
 
         char info_buffer[MAX_CMD_LEN];
         snprintf(info_buffer, sizeof(info_buffer), 
-                 "INFO: Fridge ID %d | Status: %s | Temp: %.1fC | Thermo: %.1fC | Fill: %d%% | Total time open: %ld sec", 
-                 my_id, is_open ? "OPEN" : "CLOSED", current_temp, thermostat, percentage, current_time_on);
+                 "INFO: Fridge ID %d | Status: %s | Temp: %.1fC | Thermo: %.1fC | Fill: %d%% | Delay: %d sec | Total time open: %ld sec", 
+                 my_id, is_open ? "OPEN" : "CLOSED", current_temp, thermostat, percentage, delay_time, current_time_on);
                  
         send_response(msg.sender_id, info_buffer, is_manual_override);
       } 
-                    
-        else if (sscanf(msg.command, "switch %31s %31s", action, state) == 2 && (strcmp(action, "open") == 0)) {
-                if (strcmp(state, "on") == 0) {
-                  if (!is_open) {
-                    is_open = 1;
-                    last_open_time = time(NULL);
-                  }
-                  char response[MAX_CMD_LEN];
-                  snprintf(response, sizeof(response), "Fridge %d door turned OPEN", my_id);
-                  send_response(msg.sender_id, response, is_manual_override);
-                } else if (strcmp(state, "off") == 0) {
-                  if (is_open) {
-                    is_open = 0;
-                    total_open_time += difftime(time(NULL), last_open_time);
-                  }
-                  char response[MAX_CMD_LEN];
-                  snprintf(response, sizeof(response), "Fridge %d door turned CLOSED", my_id);
-                  send_response(msg.sender_id, response, is_manual_override);
-                } else {
-                  send_response(msg.sender_id, "ERR: Unsupported command", is_manual_override);
+
+      // ------ SWITCH OPEN/CLOSE ------              
+      else if (sscanf(msg.command, "switch %31s %31s", action, state) == 2 && (strcmp(action, "open") == 0)) {
+        if (strcmp(state, "on") == 0) {
+          if (!is_open) {
+            is_open = 1;
+            last_open_time = time(NULL);
+          }
+          char response[MAX_CMD_LEN];
+          snprintf(response, sizeof(response), "Fridge %d door turned OPEN", my_id);
+          send_response(msg.sender_id, response, is_manual_override);
+        
+        } else if (strcmp(state, "off") == 0) {      
+          if (is_open) {
+            is_open = 0;
+            total_open_time += difftime(time(NULL), last_open_time);
+          }
+          char response[MAX_CMD_LEN];
+          snprintf(response, sizeof(response), "Fridge %d door turned CLOSED", my_id);
+          send_response(msg.sender_id, response, is_manual_override);
+        } else {
+          char err_msg[MAX_CMD_LEN];
+          snprintf(err_msg, sizeof(err_msg), "ERR (Code %d): Unsupported state for fridge %d door. Use 'on' or 'off'.", ERR_INVALID_COMMAND, my_id);
+          send_response(msg.sender_id, err_msg, is_manual_override);
         }
       } 
       
-              // 3. Comando LINK / SET_PARENT
+      // ------ SET PARENT ------
       else if (strstr(msg.command, "set_parent") != NULL) {
         sscanf(msg.command, "set_parent %d", &parent_id);
         printf("[Fridge %d] Parent updated to %d\n", my_id, parent_id);
       }
 
-      else if (strstr(msg.command, "thermo") != NULL) {
-        double val;
-        if (sscanf(msg.command, "switch thermostat %lf", &val) == 1 || sscanf(msg.command, "thermostat %lf", &val) == 1) {
-          thermostat = val;
-          send_response(msg.sender_id, "Thermostat updated successfully", is_manual_override);
+      // ------ MODIFY THERMOSTAT AND PERC (MANUAL ONLY) ------
+      else if (strstr(msg.command, "thermostat") != NULL || strstr(msg.command, "perc") != NULL) {
+        if (!is_manual_override) {
+          char err_msg[MAX_CMD_LEN];
+          snprintf(err_msg, sizeof(err_msg), "ERR (Code %d): Thermostat and content (perc) can ONLY be modified manually", ERR_UNSUPPORTED_SWITCH);
+          send_response(msg.sender_id, err_msg, is_manual_override);
+        } 
+        else {
+          double temp_val;
+          int perc_val;
+          
+          if (sscanf(msg.command, "switch thermostat %lf", &temp_val) == 1 || sscanf(msg.command, "thermostat %lf", &temp_val) == 1) {
+            thermostat = temp_val;
+            send_response(msg.sender_id, "Thermostat updated successfully", is_manual_override);
+          }
+          else if (sscanf(msg.command, "switch perc %d", &perc_val) == 1 || sscanf(msg.command, "perc %d", &perc_val) == 1) {
+              if (perc_val >= 0 && perc_val <= 100) {
+                percentage = perc_val;
+                send_response(msg.sender_id, "Fill percentage updated successfully", is_manual_override);
+              } else {
+                char err_msg[MAX_CMD_LEN];
+                snprintf(err_msg, sizeof(err_msg), "ERR (Code %d): Percentage must be between 0 and 100", ERR_INVALID_COMMAND);
+                send_response(msg.sender_id, err_msg, is_manual_override);
+              }
+          } else {
+            char err_msg[MAX_CMD_LEN];
+            snprintf(err_msg, sizeof(err_msg), "ERR (Code %d): Invalid syntax for manual parameter update", ERR_INVALID_COMMAND);
+            send_response(msg.sender_id, err_msg, is_manual_override);
+          }
         }
       }
 
-      else {
-        send_response(msg.sender_id, "ERR: Unsupported command", is_manual_override);
+      else if (strcmp(msg.command, "del") == 0) {
+        cleanup_and_exit(SIGTERM);
       }
-    } 
+
+      else {
+        char err_msg[MAX_CMD_LEN];
+        snprintf(err_msg, sizeof(err_msg), "ERR (Code %d): Unsupported command for Fridge %d.", ERR_INVALID_COMMAND, my_id);
+        send_response(msg.sender_id, err_msg, is_manual_override);
+      }
+    }
     
     else if (total_read > 0) {
       printf("[Fridge %d] Discarded partial message (%zd bytes)\n", my_id, total_read);

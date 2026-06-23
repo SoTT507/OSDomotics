@@ -176,9 +176,15 @@ int main(int argc, char *argv[]) {
         printf("[Bulb %d] Parent updated to %d\n", my_id, parent_id);
       }
 
+      else if (strcmp(msg.command, "del") == 0) {
+        cleanup_and_exit(SIGTERM);
+      }
+
 
       else {
-        send_response(msg.sender_id, "ERR: Unsupported command", is_manual_override);
+        char err_msg[MAX_CMD_LEN];
+        snprintf(err_msg, sizeof(err_msg), "ERR (Code %d): Unsupported command for Bulb %d.", ERR_INVALID_COMMAND, my_id);
+        send_response(msg.sender_id, err_msg, is_manual_override);
       }
     } 
     

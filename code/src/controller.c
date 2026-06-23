@@ -1,82 +1,41 @@
 #include "common.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 Device routing_table[MAX_DEVICES];
 int next_logical_id = 1;
 
-// Global atomic flag for signal safety
 volatile sig_atomic_t child_terminated = 0;
 
-// initializes the routing table
-void init_routing_table()
-{
-    for (int i = 0; i < MAX_DEVICES; i++)
-    {
+void init_routing_table() {
+    for (int i = 0; i < MAX_DEVICES; i++) {
         routing_table[i].is_active = 0;
     }
 }
 
-// finds the index of a device via logical ID
-int find_device_index(int logical_id)
-{
-    for (int i = 0; i < MAX_DEVICES; i++)
-    {
-        if (routing_table[i].is_active &&
-            routing_table[i].logical_id == logical_id)
-        {
+int find_device_index(int logical_id) {
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        if (routing_table[i].is_active && routing_table[i].logical_id == logical_id) {
             return i;
         }
     }
     return -1;
 }
 
-// // signal manager for child processes (Crash or termination)
-// void handle_sigchld(int sig)
-// {
-//     int status;
-//     pid_t pid;
-
-//     // WNOHANG allows the controller to not block if there are multiple terminated
-//     // children
-//     while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
-//     {
-//         // finds the device in the table via PID
-//         for (int i = 0; i < MAX_DEVICES; i++)
-//         {
-//             if (routing_table[i].is_active && routing_table[i].pid == pid)
-//             {
-//                 routing_table[i].is_active = 0; // marks as inactive
-//                 if (WIFSIGNALED(status))
-//                 {
-//                     // the process was terminated unexpectedly (e.g. kill -9)
-//                     printf("\n[Alarm] Device ID %d (Tipo: %s, PID: %d) has CRASHED "
-//                            "(Segnale %d)!\n",
-//                            routing_table[i].logical_id, routing_table[i].type, pid,
-//                            WTERMSIG(status));
-//                     // TODO: here would be added the logic to alert via IPC eventual
-//                     // parent/children
-//                 }
-//                 break;
-//             }
-//         }
-//         break;
-//     }
-// }
-
-// minimal, async-signal-safe signal handler
-void handle_sigchld(int sig)
-{
-    (void)sig; // suppress unused parameter warning
+void handle_sigchld(int sig) {
+    (void)sig; 
     child_terminated = 1;
 }
 
-// function to send an IPC message to a device
 int send_ipc_message(int target_logical_id, int sender_id, const char* cmd_string) {
     char fifo_path[128];
-    // builds the path of the device's FIFO (e.g., /tmp/domotics_dev_3.fifo)
     snprintf(fifo_path, sizeof(fifo_path), "%s%d.fifo", FIFO_PATH_PREFIX, target_logical_id);
 
-    // opens the FIFO for writing only (we use O_NONBLOCK to avoid blocking the controller
-    // if the device is not reading yet)
     int fd = open(fifo_path, O_WRONLY | O_NONBLOCK);
     if (fd == -1) {
         printf("Error: Unable to contact device %d (FIFO not found).\n", target_logical_id);
@@ -88,22 +47,14 @@ int send_ipc_message(int target_logical_id, int sender_id, const char* cmd_strin
     msg.target_id = target_logical_id;
     strncpy(msg.command, cmd_string, MAX_CMD_LEN);
 
-    // if (write(fd, &msg, sizeof(IPC_Message)) == -1) {
-    //     perror("Error writing to device FIFO");
-    //     close(fd);
-    //     return ERR_PIPE_BROKEN;
-    // }
-
-    // Write loop that guarantee full transfer
     ssize_t bytes_written = 0;
     char *ptr = (char *)&msg;
     
     while (bytes_written < (ssize_t)sizeof(IPC_Message)) {
         ssize_t w = write(fd, ptr + bytes_written, sizeof(IPC_Message) - bytes_written);
         if (w == -1) {
-            if (errno == EINTR) continue; // Interrupted by signal, retry
+            if (errno == EINTR) continue; 
             if (errno == EAGAIN) {
-                // Pipe is full. In a perfect world, we would queue this.
                 perror("Error: Device FIFO is full (EAGAIN)");
                 close(fd);
                 return ERR_PIPE_BROKEN;
@@ -119,56 +70,42 @@ int send_ipc_message(int target_logical_id, int sender_id, const char* cmd_strin
     return SUCCESS;
 }
 
-// returns 1 if a cycle is detected, 0 otherwise
 int check_for_cycles(int child_id, int new_parent_id) {
-    // Base case: a device cannot be the parent of itself
     if (child_id == new_parent_id) return 1; 
 
     int current_node = new_parent_id;
-    
-    // Iterates the tree upwards until the root (0 = Controller)
     while (current_node != 0) { 
         int idx = find_device_index(current_node);
-        if (idx == -1) break; // Safety: node not found (shouldn't happen but who knows)
+        if (idx == -1) break; 
         
         int parent_of_current = routing_table[idx].parent_id;
-
-        // if one of the parents of the new parent is the child we are connecting --> cycle!
-        if (parent_of_current == child_id) {
-            return 1; 
-        }
+        if (parent_of_current == child_id) return 1; 
+        
         current_node = parent_of_current;
     }
-    return 0; // No cycle found
+    return 0; 
 }
 
-int main()
-{
+int main() {
     char input[MAX_CMD_LEN];
     int controller_fifo_fd;
     fd_set read_fds;
 
     init_routing_table();
 
-    // sets the manager for terminated child processes
     struct sigaction sa;
     sa.sa_handler = handle_sigchld;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP; // SA_RESTART restarts select() if interrupted
-    if (sigaction(SIGCHLD, &sa, NULL) == -1)
-    {
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP; 
+    if (sigaction(SIGCHLD, &sa, NULL) == -1) {
         perror("Error: sigaction");
         exit(EXIT_FAILURE);
     }
 
-    // controller FIFO creation
     mkfifo(CONTROLLER_FIFO, 0666);
-    // open in O_RDWR --> otherwise, in O_RDONLY, read() would return EOF (0) as
-    // soon as the last writer closes the pipe --> O_RDWR keeps the pipe open
     controller_fifo_fd = open(CONTROLLER_FIFO, O_RDWR);
 
-    if (controller_fifo_fd == -1)
-    {
+    if (controller_fifo_fd == -1) {
         perror("Error opening FIFO controller");
         exit(EXIT_FAILURE);
     }
@@ -176,39 +113,25 @@ int main()
     printf("--- Domotics System Powered On ---\n");
     printf("Digit 'help' to view all commands or 'exit' to quit.\n");
     printf("domotics> ");
-    fflush(stdout); // force the print to video before select()
+    fflush(stdout); 
 
-    // infinite loop for interactive shell
-    while (1)
-    {
-        FD_ZERO(&read_fds);
-        FD_SET(STDIN_FILENO, &read_fds);       // fd 0: input (keyboard)
-        FD_SET(controller_fifo_fd, &read_fds); // fd of FIFO for IPC messages
-
-        int max_fd = (controller_fifo_fd > STDIN_FILENO) ? controller_fifo_fd : STDIN_FILENO;
-
-        // select() awaits blocking until data is available on the keyboard or FIFO
-        int activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
-
-
-        //Handle dead children synchronously in the main loop (was on handle_sigchld before)
-        if (child_terminated)
-        {
-            child_terminated = 0; // Reset flag
+    while (1) {
+        // handling signals BEFORE the select
+        if (child_terminated) {
+            child_terminated = 0; 
             int status;
             pid_t pid;
 
-            while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
-            {
-                for (int i = 0; i < MAX_DEVICES; i++)
-                {
-                    if (routing_table[i].is_active && routing_table[i].pid == pid)
-                    {
+            while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+                for (int i = 0; i < MAX_DEVICES; i++) {
+                    if (routing_table[i].is_active && routing_table[i].pid == pid) {
                         routing_table[i].is_active = 0;
-                        if (WIFSIGNALED(status))
-                        {
-                            printf("\n[Alarm] Device ID %d (Tipo: %s, PID: %d) has CRASHED (Segnale %d)!\n",
-                                   routing_table[i].logical_id, routing_table[i].type, pid, WTERMSIG(status));
+                        if (WIFSIGNALED(status)) {
+                            printf("\n[Alarm] Device ID %d has CRASHED (Code %d, Signal %d)!\n",
+                                    routing_table[i].logical_id, ERR_PROCESS_CRASHED, WTERMSIG(status));
+                        } else if (WIFEXITED(status)) {
+                            printf("\n[Controller] Device ID %d (Type: %s, PID: %d) cleanly shut down.\n",
+                                   routing_table[i].logical_id, routing_table[i].type, pid);
                         }
                         break;
                     }
@@ -218,32 +141,45 @@ int main()
             fflush(stdout);
         }
 
+        FD_ZERO(&read_fds);
+        FD_SET(STDIN_FILENO, &read_fds);       
+        FD_SET(controller_fifo_fd, &read_fds); 
 
-        if (activity < 0 && errno != EINTR)
-        {
+        int max_fd = (controller_fifo_fd > STDIN_FILENO) ? controller_fifo_fd : STDIN_FILENO;
+
+        int activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
+
+        // 2. Protezione totale da EINTR per evitare false letture
+        if (activity < 0) {
+            if (errno == EINTR) continue; 
             perror("Error: select");
             break;
         }
-        // IS A COMMAND ARRIVED FROM THE USER (KEYBOARD)?
-        if (FD_ISSET(STDIN_FILENO, &read_fds))
-        {
-            // FIX C: Read unbuffered raw bytes from descriptor to prevent select() desync
-            ssize_t n = read(STDIN_FILENO, input, MAX_CMD_LEN - 1);
-            if (n <= 0)
-                break; // EOF or Error
 
-            input[n] = '\0';
-            input[strcspn(input, "\n")] = 0; // remove \n
-            if (strlen(input) == 0)
-            {
+        if (FD_ISSET(STDIN_FILENO, &read_fds)) {
+            
+            // reading byte-by-byte to not ignore multiple commands queued by the bash script
+            int i = 0;
+            char c;
+            ssize_t n;
+            while (i < MAX_CMD_LEN - 1) {
+                n = read(STDIN_FILENO, &c, 1);
+                if (n <= 0) break;
+                if (c == '\n' || c == '\r') break;
+                input[i++] = c;
+            }
+            input[i] = '\0';
+
+            // Uscita sicura tramite EOF del bash script
+            if (n <= 0 && i == 0) break; 
+
+            if (strlen(input) == 0) {
                 printf("domotics> ");
                 fflush(stdout);
                 continue;
             }
 
-            // --- Input Management ---
-            if (strcmp(input, "help") == 0)
-            {
+            if (strcmp(input, "help") == 0) {
                 printf("\n--- DOMOTICS SYSTEM COMMANDS ---\n");
                 printf("  help                         : Shows this help menu.\n");
                 printf("  list                         : Lists all devices, their unique ID, and summarizes characteristics.\n");
@@ -255,13 +191,10 @@ int main()
                 printf("  exit                         : Safely shuts down the Controller and all child processes.\n");
                 printf("--------------------------------\n");
             }
-            else if (strcmp(input, "list") == 0)
-            {
+            else if (strcmp(input, "list") == 0) {
                 printf("--- ACTIVE DEVICES ---\n");
-                for (int i = 0; i < MAX_DEVICES; i++)
-                {
-                    if (routing_table[i].is_active)
-                    {
+                for (int i = 0; i < MAX_DEVICES; i++) {
+                    if (routing_table[i].is_active) {
                         printf("ID: %d | Type: %s | PID: %d\n", routing_table[i].logical_id, routing_table[i].type, routing_table[i].pid);
                     }
                 }
@@ -269,36 +202,31 @@ int main()
             else if (strncmp(input, "add ", 4) == 0) {
                 char device_type[32];
                 if (sscanf(input, "add %31s", device_type) == 1) {
-                    
                     int new_id = next_logical_id++;
                     pid_t pid = fork();
 
                     if (pid < 0) {
                         perror("Error in fork");
                     } else if (pid == 0) {
-                        // --- FATHER PROCESS (New Device) ---
+                        // close file descriptor in child to not mess with the bash script's EOF
+                        close(STDIN_FILENO);
+                        close(controller_fifo_fd);
+
                         char id_str[16];
                         sprintf(id_str, "%d", new_id);
-                        
-                        // setup the executable path (e.g., "./bulb")
                         char exec_path[64];
                         snprintf(exec_path, sizeof(exec_path), "./%s", device_type);
-
                         execl(exec_path, device_type, id_str, NULL);
-                        
-                        // If we arrive here, execl has failed
                         printf("Error: unable to launch '%s'\n", device_type);
                         exit(ERR_FORK_FAILED); 
                     } else {
-                        // --- FATHER PROCESS (controller) ---
-                        // adding to routing table
                         for (int i = 0; i < MAX_DEVICES; i++) {
                             if (!routing_table[i].is_active) {
                                 routing_table[i].logical_id = new_id;
                                 routing_table[i].pid = pid;
                                 strcpy(routing_table[i].type, device_type);
                                 routing_table[i].is_active = 1;
-                                routing_table[i].parent_id = 0; // default parent is Controller
+                                routing_table[i].parent_id = 0; 
                                 break;
                             }
                         }
@@ -311,69 +239,59 @@ int main()
                 if (sscanf(input, "del %d", &target_id) == 1) {
                     int index = find_device_index(target_id);
                     if (index != -1) {
-                        printf("[Controller] Terminating device ID %d (PID %d)...\n", target_id, routing_table[index].pid);
-                        // sends SIGTERM for clean termination --> the SIGCHLD handler will remove it from the routing table
-                        kill(routing_table[index].pid, SIGTERM); 
+                        printf("[Controller] Sending cascade termination to device ID %d...\n", target_id);
+                        send_ipc_message(target_id, 0, "del"); // sending IPC command instead of kill
                     } else {
                         printf("Error: Device ID %d not found.\n", target_id);
                     }
                 }
             }
-            else if (strncmp(input, "link ", 5) == 0)
-            {
+            else if (strncmp(input, "link ", 5) == 0) {
                 int id1, id2;
-                // The pattern "link %d to %d" does all the work for us
-                if (sscanf(input, "link %d to %d", &id1, &id2) == 2)
-                {
+                if (sscanf(input, "link %d to %d", &id1, &id2) == 2) {
                     int idx1 = find_device_index(id1);
                     int idx2 = find_device_index(id2);
 
-                    // to verify that the devices exists (id2==0 is valid by default)
-                    if (idx1 != -1 && (idx2 != -1 || id2 == 0)) {
-                        // REQ: id2 MUST be a Control Device (hub, timer or Controller)
-                        // the controller which is the first created, has ID 0, thus id2 == 0 is always valid
-                        if (strcmp(routing_table[idx2].type, "hub") != 0 && strcmp(routing_table[idx2].type, "timer") != 0 && id2 != 0) {
-                            
-                            printf("Error (Code %d): The device %d (%s) is NOT a Control Device.\n", 
-                            ERR_DEVICE_TYPE_MISMATCH, id2, routing_table[idx2].type);
-                        }else{
-                            char cmd_buffer[MAX_CMD_LEN];
+                    // control device existence
+                    if (idx1 == -1 || (id2 != 0 && idx2 == -1)) {
+                        printf("Error (Code %d): One or both devices not found.\n", ERR_DEVICE_NOT_FOUND);
+                    } 
+                    // control parent device type (must be Hub, Timer or Controller=0)
+                    else if (id2 != 0 && strcmp(routing_table[idx2].type, "hub") != 0 && strcmp(routing_table[idx2].type, "timer") != 0) {
+                        printf("Error (Code %d): Device %d (%s) cannot be a parent (Control Device required).\n", 
+                               ERR_DEVICE_TYPE_MISMATCH, id2, routing_table[idx2].type);
+                    } 
+                    // control cycles
+                    else if (check_for_cycles(id1, id2)) {
+                        printf("Error (Code %d): Circular link detected. Operation aborted.\n", ERR_CIRCULAR_LINK);
+                    } 
+                    else {
+                        printf("[Controller] Linking devices: %d set to be child of %d\n", id1, id2);
+                        routing_table[idx1].parent_id = id2;
 
-                            printf("[Controller] Linking devices: %d set to be child of %d\n", id1, id2);
+                        // sending IPC commands with verification of the outcome
+                        int res1 = send_ipc_message(id1, 0, "set_parent"); // we can only pass the command, the device will parse it
+                        int res2 = (id2 != 0) ? send_ipc_message(id2, 0, "add_child") : SUCCESS;
 
-                            routing_table[idx1].parent_id = id2;
-
-                            // sending IPC to the child device (id1) informing it of the new parent (id2)
-                            snprintf(cmd_buffer, sizeof(cmd_buffer), "set_parent %d", id2);
-                            send_ipc_message(id1, 0, cmd_buffer);
-
-                            // sending IPC to the parent device (id2) informing it of the new child (id1)
-                            // if the parent is the controller (id2 == 0), we don't send the IPC message, we just update our logical table.
-                            if (id2 != 0) {
-                                snprintf(cmd_buffer, sizeof(cmd_buffer), "add_child %d", id1);
-                                send_ipc_message(id2, 0, cmd_buffer);
-                            }
+                        if (res1 != SUCCESS || res2 != SUCCESS) {
+                            printf("Error (Code %d): Link failed during IPC communication.\n", ERR_LINK_FAILED);
+                        } else {
                             printf("[Controller] Link command sent successfully.\n");
                         }
-                    } else {
-                        printf("Errore: Impossible to find one or both devices (ID1: %d, ID2: %d).\n", id1, id2);
                     }
                 } else {
-                    printf("Error: Invalid syntax. Use: link <id1> to <id2>\n");
+                    printf("Error (Code %d): Invalid syntax. Use: link <id1> to <id2>\n", ERR_INVALID_COMMAND);
                 }
             }
-            else if (strncmp(input, "switch ", 7) == 0)
-            {
+            else if (strncmp(input, "switch ", 7) == 0) {
                 int target_id;
                 char label[32], pos[32];
                 if (sscanf(input, "switch %d %31s %31s", &target_id, label, pos) == 3){
                     if (find_device_index(target_id) != -1) {
                         char cmd_buffer[MAX_CMD_LEN];
-                        // formatting the command to send to the device
                         snprintf(cmd_buffer, sizeof(cmd_buffer), "switch %s %s", label, pos);
-        
                         printf("[Controller] Sending command to device %d...\n", target_id);
-                        send_ipc_message(target_id, 0, cmd_buffer); // sender_id 0 = Controller
+                        send_ipc_message(target_id, 0, cmd_buffer); 
                     }else{
                         printf("Error: Device ID %d not found.\n", target_id);
                     }
@@ -381,24 +299,19 @@ int main()
                     printf("Error: Invalid syntax. Use: switch <id> <label> <pos>\n");
                 }
             }
-            else if (strncmp(input, "info ", 5) == 0)
-            {
+            else if (strncmp(input, "info ", 5) == 0) {
                 int target_id;
                 if (sscanf(input, "info %d", &target_id) == 1) {
                     if (find_device_index(target_id) != -1) {
                         printf("[Controller] requesting info for device %d...\n", target_id);
                         send_ipc_message(target_id, 0, "info");
                     }
-                }
-                else
-                {
+                } else {
                     printf("Error: Invalid syntax. Use: info <id>\n");
                 }
             }
-            else if (strcmp(input, "exit") == 0)
-            {
+            else if (strcmp(input, "exit") == 0) {
                 printf("Powering off...\n");
-                // sends SIGTERM to all active devices
                 for (int i = 0; i < MAX_DEVICES; i++) {
                     if (routing_table[i].is_active) {
                         kill(routing_table[i].pid, SIGTERM);
@@ -406,23 +319,19 @@ int main()
                 }
                 break;
             }
-            else
-            {
+            else {
                 printf("Error: Command not found (Code: %d). Type 'help' for available commands.\n", ERR_INVALID_COMMAND);
             }
 
             printf("domotics> ");
             fflush(stdout);
         }
-        //  INCOMING MESSAGE IPC FROM A CHILD (FIFO)?
-        if (FD_ISSET(controller_fifo_fd, &read_fds))
-        {
+
+        if (FD_ISSET(controller_fifo_fd, &read_fds)) {
             IPC_Message msg;
             ssize_t bytes_read = read(controller_fifo_fd, &msg, sizeof(IPC_Message));
 
-            if (bytes_read > 0)
-            {
-                // TODO: manage IPC message (e.g. status update, device errors)
+            if (bytes_read > 0) {
                 printf("\n[IPC IN] Da: %d | A: %d | Msg: %s\n", msg.sender_id, msg.target_id, msg.command);
                 printf("domotics> ");
                 fflush(stdout);

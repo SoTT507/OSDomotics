@@ -127,25 +127,38 @@ int main(int argc, char *argv[]) {
       char action[32];
       char state[32];
 
-      if (sscanf(msg.command, "switch %31s %31s", action, state) == 2 && (strcmp(action, "open") == 0)) {
-        if (strcmp(state, "on") == 0) {
-          if (!is_open) {
-            is_open = 1;
-            last_open_time = time(NULL);
+      if (sscanf(msg.command, "switch %31s %31s", action, state) == 2) {
+        
+        // Open button behavior
+        if (strcmp(action, "open") == 0) {
+          if (strcmp(state, "on") == 0) {
+            if (!is_open) {
+              is_open = 1;
+              last_open_time = time(NULL);
+            }
+            send_response(msg.sender_id, "ACK: Window turned OPEN (switch 'open' triggered and returned to off)", is_manual_override);
+          } 
+          else {
+            char err_msg[MAX_CMD_LEN];
+            snprintf(err_msg, sizeof(err_msg), "ERR (Code %d): Unsupported switch for window %d. Use 'open' or 'close'.", ERR_UNSUPPORTED_SWITCH, my_id);
+            send_response(msg.sender_id, err_msg, is_manual_override);
           }
-          char response[MAX_CMD_LEN];
-          snprintf(response, sizeof(response), "Window %d turned OPEN", my_id);
-          send_response(msg.sender_id, response, is_manual_override);
-        } else if (strcmp(state, "off") == 0) {
-          if (is_open) {
-            is_open = 0;
-            total_open_time += difftime(time(NULL), last_open_time);
+        } 
+        // Close button behavior
+        else if (strcmp(action, "close") == 0) {
+          if (strcmp(state, "on") == 0) {
+            if (is_open) {
+              is_open = 0;
+              total_open_time += difftime(time(NULL), last_open_time);
+            }
+            send_response(msg.sender_id, "ACK: Window turned CLOSED (switch 'close' triggered and returned to off)", is_manual_override);
+          } else {
+            // if "switch close off" is sent, the button is already off
+            send_response(msg.sender_id, "ACK: Switch 'close' is already off", is_manual_override);
           }
-          char response[MAX_CMD_LEN];
-          snprintf(response, sizeof(response), "Window %d turned CLOSED", my_id);
-          send_response(msg.sender_id, response, is_manual_override);
-        } else {
-          send_response(msg.sender_id, "ERR: Unsupported command", is_manual_override);
+        } 
+        else {
+          send_response(msg.sender_id, "ERR: Unsupported switch for window. Use 'open' or 'close'.", is_manual_override);
         }
       }
       
@@ -169,8 +182,14 @@ int main(int argc, char *argv[]) {
         printf("[Window %d] Parent updated to %d\n", my_id, parent_id);
       }
 
+      else if (strcmp(msg.command, "del") == 0) {
+        cleanup_and_exit(SIGTERM);
+      }
+
       else {
-        send_response(msg.sender_id, "ERR: Unsupported command", is_manual_override);
+        char err_msg[MAX_CMD_LEN];
+        snprintf(err_msg, sizeof(err_msg), "ERR (Code %d): Unsupported command for Window %d.", ERR_INVALID_COMMAND, my_id);
+        send_response(msg.sender_id, err_msg, is_manual_override);
       }
     } 
     

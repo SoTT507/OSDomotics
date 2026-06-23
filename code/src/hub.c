@@ -192,9 +192,10 @@ int main(int argc, char *argv[]) {
 
                 char info_buffer[MAX_CMD_LEN];
                 if (!states_match) {
-                    snprintf(info_buffer, sizeof(info_buffer), "INFO: Hub ID %d | Status: MANUAL OVERRIDE | Connected: %d", my_id, num_children);
+                  // Ora l'errore è esplicito nel codice (202)
+                  snprintf(info_buffer, sizeof(info_buffer), "INFO: Hub ID %d | Status: MANUAL OVERRIDE (Code %d) | Connected: %d", my_id, ERR_MANUAL_OVERRIDE, num_children);
                 } else {
-                    snprintf(info_buffer, sizeof(info_buffer), "INFO: Hub ID %d | Status: %s | Connected: %d", my_id, (first_logical_state == 1) ? "ON/OPEN" : "OFF/CLOSED", num_children);
+                  snprintf(info_buffer, sizeof(info_buffer), "INFO: Hub ID %d | Status: %s | Connected: %d", my_id, (first_logical_state == 1) ? "ON/OPEN" : "OFF/CLOSED", num_children);
                 }
                 send_response(msg.sender_id, info_buffer, is_manual_override);
             }

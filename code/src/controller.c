@@ -127,8 +127,8 @@ int main() {
                     if (routing_table[i].is_active && routing_table[i].pid == pid) {
                         routing_table[i].is_active = 0;
                         if (WIFSIGNALED(status)) {
-                            printf("\n[Alarm] Device ID %d (Type: %s, PID: %d) has CRASHED (Signal %d)!\n",
-                                   routing_table[i].logical_id, routing_table[i].type, pid, WTERMSIG(status));
+                            printf("\n[Alarm] Device ID %d has CRASHED (Code %d, Signal %d)!\n",
+                                    routing_table[i].logical_id, ERR_PROCESS_CRASHED, WTERMSIG(status));
                         } else if (WIFEXITED(status)) {
                             printf("\n[Controller] Device ID %d (Type: %s, PID: %d) cleanly shut down.\n",
                                    routing_table[i].logical_id, routing_table[i].type, pid);
@@ -252,34 +252,35 @@ int main() {
                     int idx1 = find_device_index(id1);
                     int idx2 = find_device_index(id2);
 
-                    if (idx1 != -1 && (idx2 != -1 || id2 == 0)) {
-                        if (strcmp(routing_table[idx2].type, "hub") != 0 && strcmp(routing_table[idx2].type, "timer") != 0 && id2 != 0) {
-                            printf("Error (Code %d): The device %d (%s) is NOT a Control Device.\n", 
-                            ERR_DEVICE_TYPE_MISMATCH, id2, routing_table[idx2].type);
+                    // Controllo esistenza dispositivi
+                    if (idx1 == -1 || (id2 != 0 && idx2 == -1)) {
+                        printf("Error (Code %d): One or both devices not found.\n", ERR_DEVICE_NOT_FOUND);
+                    } 
+                    // Controllo tipo dispositivo padre (deve essere Hub, Timer o Controller=0)
+                    else if (id2 != 0 && strcmp(routing_table[idx2].type, "hub") != 0 && strcmp(routing_table[idx2].type, "timer") != 0) {
+                        printf("Error (Code %d): Device %d (%s) cannot be a parent (Control Device required).\n", 
+                               ERR_DEVICE_TYPE_MISMATCH, id2, routing_table[idx2].type);
+                    } 
+                    // Controllo cicli
+                    else if (check_for_cycles(id1, id2)) {
+                        printf("Error (Code %d): Circular link detected. Operation aborted.\n", ERR_CIRCULAR_LINK);
+                    } 
+                    else {
+                        printf("[Controller] Linking devices: %d set to be child of %d\n", id1, id2);
+                        routing_table[idx1].parent_id = id2;
+
+                        // sending IPC commands with verification of the outcome
+                        int res1 = send_ipc_message(id1, 0, "set_parent"); // we can only pass the command, the device will parse it
+                        int res2 = (id2 != 0) ? send_ipc_message(id2, 0, "add_child") : SUCCESS;
+
+                        if (res1 != SUCCESS || res2 != SUCCESS) {
+                            printf("Error (Code %d): Link failed during IPC communication.\n", ERR_LINK_FAILED);
                         } else {
-                            if (check_for_cycles(id1, id2)) {
-                                printf("Error (Code %d): Circular link detected (e.g. A -> B -> A). Operation aborted.\n", ERR_CIRCULAR_LINK);
-                            } else {
-                                char cmd_buffer[MAX_CMD_LEN];
-                                printf("[Controller] Linking devices: %d set to be child of %d\n", id1, id2);
-
-                                routing_table[idx1].parent_id = id2;
-
-                                snprintf(cmd_buffer, sizeof(cmd_buffer), "set_parent %d", id2);
-                                send_ipc_message(id1, 0, cmd_buffer);
-
-                                if (id2 != 0) {
-                                    snprintf(cmd_buffer, sizeof(cmd_buffer), "add_child %d", id1);
-                                    send_ipc_message(id2, 0, cmd_buffer);
-                                }
-                                printf("[Controller] Link command sent successfully.\n");
-                            }
+                            printf("[Controller] Link command sent successfully.\n");
                         }
-                    } else {
-                        printf("Error: Impossible to find one or both devices.\n");
                     }
                 } else {
-                    printf("Error: Invalid syntax. Use: link <id1> to <id2>\n");
+                    printf("Error (Code %d): Invalid syntax. Use: link <id1> to <id2>\n", ERR_INVALID_COMMAND);
                 }
             }
             else if (strncmp(input, "switch ", 7) == 0) {
